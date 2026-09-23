@@ -3,7 +3,7 @@ const {
   Task,
   Project,
   ProjectMember,
-   User,
+  User,
   Tag,
 } = require("../models");
 const { getIO } = require("../socket");
@@ -35,7 +35,9 @@ async function loadSubtaskWithUsers(subtaskId) {
 }
 
 async function resolveTagRecords(tagNames, organizationId) {
-  const uniqueNames = [...new Set(tagNames.map((name) => name.trim().toLowerCase()))];
+  const uniqueNames = [
+    ...new Set(tagNames.map((name) => name.trim().toLowerCase())),
+  ];
 
   const tags = [];
   for (const name of uniqueNames) {
@@ -53,14 +55,8 @@ async function resolveTagRecords(tagNames, organizationId) {
 exports.createSubtask = async (req, res) => {
   try {
     const { projectId, taskId } = req.params;
-    const {
-      title,
-      description,
-      assigned_to,
-      priority,
-      due_date,
-      tags,
-    } = req.body;
+    const { title, description, assigned_to, priority, due_date, tags } =
+      req.body;
 
     // 1. Validate title
     if (!title || !title.trim()) {
@@ -146,7 +142,10 @@ exports.createSubtask = async (req, res) => {
 
     // 7. Handle tags
     if (Array.isArray(tags) && tags.length > 0) {
-      const tagRecords = await resolveTagRecords(tags, req.user.organization_id);
+      const tagRecords = await resolveTagRecords(
+        tags,
+        req.user.organization_id,
+      );
       await subtask.setTags(tagRecords);
     }
 
@@ -155,7 +154,9 @@ exports.createSubtask = async (req, res) => {
 
     // 9. Notify assignee
     if (full.assigned_to && full.assigned_to !== req.user.id) {
-      const actor = await User.findByPk(req.user.id, { attributes: ["first_name"] });
+      const actor = await User.findByPk(req.user.id, {
+        attributes: ["id", "first_name", "last_name", "email"],
+      });
       await createNotification({
         organizationId: req.user.organization_id,
         userId: full.assigned_to,
@@ -169,9 +170,7 @@ exports.createSubtask = async (req, res) => {
 
     // 10. Real-time notification
     try {
-      getIO()
-        .to(`task:${taskId}`)
-        .emit("subtask:created", full);
+      getIO().to(`task:${taskId}`).emit("subtask:created", full);
     } catch (err) {
       console.error("Socket emit failed:", err.message);
     }
@@ -205,7 +204,6 @@ exports.createSubtask = async (req, res) => {
     });
   }
 };
-
 
 exports.getSubtasks = async (req, res) => {
   try {
@@ -250,23 +248,12 @@ exports.getSubtasks = async (req, res) => {
         {
           model: User,
           as: "assignee",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-            "avatar_url",
-          ],
+          attributes: ["id", "first_name", "last_name", "email", "avatar_url"],
         },
         {
           model: User,
           as: "creator",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-          ],
+          attributes: ["id", "first_name", "last_name", "email"],
         },
         {
           model: Tag,
@@ -293,13 +280,7 @@ exports.getSubtasks = async (req, res) => {
 exports.updateSubtask = async (req, res) => {
   try {
     const { projectId, taskId, subtaskId } = req.params;
-    const {
-      title,
-      description,
-      status,
-      assigned_to,
-      tags,
-    } = req.body;
+    const { title, description, status, assigned_to, tags } = req.body;
 
     // 1. Verify project belongs to current organization
     const project = await Project.findOne({
@@ -347,8 +328,7 @@ exports.updateSubtask = async (req, res) => {
 
     // 4. Assigned member can update status only
     const isAssignedMember =
-      req.user.role === "member" &&
-      subtask.assigned_to === req.user.id;
+      req.user.role === "member" && subtask.assigned_to === req.user.id;
 
     if (isAssignedMember) {
       const onlyStatusUpdate =
@@ -364,11 +344,7 @@ exports.updateSubtask = async (req, res) => {
         });
       }
 
-      const allowedStatuses = [
-        "todo",
-        "in_progress",
-        "completed",
-      ];
+      const allowedStatuses = ["todo", "in_progress", "completed"];
 
       if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
@@ -436,11 +412,7 @@ exports.updateSubtask = async (req, res) => {
 
     // 8. Validate status
     if (status !== undefined) {
-      const allowedStatuses = [
-        "todo",
-        "in_progress",
-        "completed",
-      ];
+      const allowedStatuses = ["todo", "in_progress", "completed"];
 
       if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
@@ -481,7 +453,10 @@ exports.updateSubtask = async (req, res) => {
       if (tags.length === 0) {
         await subtask.setTags([]);
       } else {
-        const tagRecords = await resolveTagRecords(tags, req.user.organization_id);
+        const tagRecords = await resolveTagRecords(
+          tags,
+          req.user.organization_id,
+        );
         await subtask.setTags(tagRecords);
       }
     }
@@ -493,7 +468,9 @@ exports.updateSubtask = async (req, res) => {
       subtask.assigned_to !== previousAssignee &&
       subtask.assigned_to !== req.user.id
     ) {
-      const actor = await User.findByPk(req.user.id, { attributes: ["first_name"] });
+      const actor = await User.findByPk(req.user.id, {
+        attributes: ["first_name"],
+      });
       await createNotification({
         organizationId: req.user.organization_id,
         userId: subtask.assigned_to,
@@ -604,7 +581,9 @@ exports.deleteSubtask = async (req, res) => {
     await subtask.destroy();
 
     try {
-      getIO().to(`task:${taskId}`).emit("subtask:deleted", { subtaskId: deletedSubtaskId });
+      getIO()
+        .to(`task:${taskId}`)
+        .emit("subtask:deleted", { subtaskId: deletedSubtaskId });
     } catch (err) {
       console.error("Socket emit failed:", err.message);
     }
@@ -637,6 +616,3 @@ exports.deleteSubtask = async (req, res) => {
     });
   }
 };
-
-
-

@@ -79,6 +79,7 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
   const pcRef = useRef(null);
   const sessionIdRef = useRef(null);
   const connectTimerRef = useRef(null);
+  const pendingIceCandidatesRef = useRef([]);
   const [phase, setPhase] = useState("idle"); // idle | requesting | connecting | live | ended | error
   const [message, setMessage] = useState("");
   const [stunOnly, setStunOnly] = useState(false);
@@ -131,6 +132,7 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
     (notifyServer) => {
       const socket = getSocket();
       const sid = sessionIdRef.current;
+      pendingIceCandidatesRef.current = [];
       if (connectTimerRef.current) {
         clearTimeout(connectTimerRef.current);
         connectTimerRef.current = null;
@@ -159,6 +161,7 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
     setPhase("requesting");
     setMessage("");
     setLayout("normal"); // fresh session opens at normal size, never pre-minimized
+    pendingIceCandidatesRef.current = [];
 
     const onOffer = async ({ sessionId, sdp }) => {
       if (cancelled || sessionId !== sessionIdRef.current || !pcRef.current) return;
@@ -167,6 +170,19 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
         const answer = await pcRef.current.createAnswer();
         await pcRef.current.setLocalDescription(answer);
         socket.emit("livescreen:answer", { sessionId, sdp: answer.sdp });
+
+        // Flush any candidates buffered before remoteDescription was set
+        if (pendingIceCandidatesRef.current.length > 0) {
+          for (const cand of pendingIceCandidatesRef.current) {
+            try {
+              await pcRef.current.addIceCandidate(cand);
+            } catch {
+              /* non-fatal */
+            }
+          }
+          pendingIceCandidatesRef.current = [];
+        }
+
         setPhase("connecting");
       } catch (err) {
         setPhase("error");
@@ -175,7 +191,11 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
       }
     };
     const onIce = async ({ sessionId, candidate }) => {
-      if (sessionId !== sessionIdRef.current || !pcRef.current || !candidate) return;
+      if (sessionId !== sessionIdRef.current || !candidate) return;
+      if (!pcRef.current || !pcRef.current.remoteDescription || !pcRef.current.remoteDescription.type) {
+        pendingIceCandidatesRef.current.push(candidate);
+        return;
+      }
       try {
         await pcRef.current.addIceCandidate(candidate);
       } catch {
@@ -237,6 +257,14 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
         teardown(true);
       };
 
+      const failConnection = () => {
+        fail(
+          !hasTurn
+            ? NO_CONNECTION_HINT
+            : "Couldn't reach the employee's screen. Peer connection failed — please check network or firewall settings.",
+        );
+      };
+
       pc.addEventListener("connectionstatechange", () => {
         const st = pc.connectionState;
         if (st === "connected") {
@@ -247,21 +275,21 @@ export default function LiveScreenViewer({ open, targetUserId, employeeName, onC
           setPhase("live");
           setMessage("");
         } else if (st === "failed") {
-          fail(NO_CONNECTION_HINT);
+          failConnection();
         } else if (st === "disconnected") {
           // transient — WebRTC may recover; surface it without tearing down yet
           setMessage("Connection interrupted — trying to recover…");
         }
       });
       pc.addEventListener("iceconnectionstatechange", () => {
-        if (pc.iceConnectionState === "failed") fail(NO_CONNECTION_HINT);
+        if (pc.iceConnectionState === "failed") failConnection();
       });
 
       // Overall guard: never leave the viewer spinning if nothing ever connects
       // (STUN-only on a strict NAT, lost signaling, backend timer suspended…).
       connectTimerRef.current = setTimeout(() => {
         if (pcRef.current && pcRef.current.connectionState !== "connected") {
-          fail(NO_CONNECTION_HINT);
+          failConnection();
         }
       }, VIEWER_CONNECT_TIMEOUT_MS);
 

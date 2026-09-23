@@ -58,7 +58,12 @@ function iceServers() {
   if (raw && raw.trim()) {
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length) return parsed;
+      if (Array.isArray(parsed) && parsed.length) {
+        const hasStun = parsed.some((s) =>
+          [].concat(s.urls || []).some((u) => /^stun:/i.test(String(u)))
+        );
+        return hasStun ? parsed : [...DEFAULT_ICE_SERVERS, ...parsed];
+      }
     } catch {
       console.error("LIVE_SCREEN_ICE_SERVERS is not valid JSON — using STUN-only default.");
     }

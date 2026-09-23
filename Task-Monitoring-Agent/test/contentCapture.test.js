@@ -6,6 +6,7 @@ const {
   classifyTarget,
   classifyPromptSite,
   looksLikeSearchField,
+  isOwnLabelEcho,
   looksPrivate,
   reduceQuery,
   startContentCapture,
@@ -135,6 +136,85 @@ test("all-site: a non-search field on an arbitrary site -> null", () => {
 test("classifyTarget: no host -> null", () => {
   assert.equal(classifyTarget(null, null, searchField()), null);
   assert.equal(classifyTarget("", "", searchField()), null);
+});
+
+// --- regression: the four reported false-positive strings -----------------
+
+test("isOwnLabelEcho: text identical to the control's own name/label is an echo, not content", () => {
+  assert.equal(isOwnLabelEcho({ text: "Search", name: "Search" }), true);
+  assert.equal(isOwnLabelEcho({ text: "Ask anything", name: "Ask anything" }), true);
+  assert.equal(
+    isOwnLabelEcho({ text: "Address and search bar", name: "Address and search bar" }),
+    true,
+  );
+  assert.equal(isOwnLabelEcho({ text: "  Search  ", automationId: "search" }), true);
+  assert.equal(isOwnLabelEcho({ text: "cheap flights", name: "Search" }), false);
+  assert.equal(isOwnLabelEcho({ text: "", name: "Search" }), false);
+  assert.equal(isOwnLabelEcho(null), false);
+});
+
+test('false positive: "Address and search bar" (Chrome\'s own address bar) is never a search field', () => {
+  // The address bar's accessible name literally contains the word "search",
+  // which would otherwise satisfy tokenLooksSearchy — it must be excluded
+  // structurally (own-label echo + automationId "omnibox"), not by luck.
+  const addressBar = editField({
+    name: "Address and search bar",
+    automationId: "omnibox",
+    text: "Address and search bar",
+  });
+  assert.equal(classifyTarget("google.com", "google.com", addressBar), null);
+});
+
+test('false positive: automationId "omnibox" is never a capture target regardless of text', () => {
+  const addressBar = editField({ automationId: "omnibox", text: "https://example.com/anything" });
+  assert.equal(classifyTarget("example.com", "example.com", addressBar), null);
+});
+
+test('false positive: "Search" placeholder-echo on a real search field is never captured', () => {
+  const field = searchField({ name: "Search", text: "Search" });
+  assert.equal(classifyTarget("bing.com", "bing.com", field), null);
+});
+
+test('false positive: "Ask anything" placeholder-echo on ChatGPT composer is never captured', () => {
+  const composer = editField({
+    controlType: "ControlType.Document",
+    name: "Ask anything",
+    text: "Ask anything",
+  });
+  assert.equal(classifyTarget("chatgpt.com", "chatgpt.com", composer), null);
+});
+
+test("ChatGPT + focused heading (ControlType.Text) is never captured as a prompt", () => {
+  const heading = { controlType: "ControlType.Text", name: "Chat with ChatGPT", text: "Chat with ChatGPT" };
+  assert.equal(classifyTarget("chatgpt.com", "chatgpt.com", heading), null);
+});
+
+test("ChatGPT + focused button (ControlType.Button) is never captured as a prompt", () => {
+  const button = { controlType: "ControlType.Button", name: "New chat", text: "New chat" };
+  assert.equal(classifyTarget("chatgpt.com", "chatgpt.com", button), null);
+});
+
+test("ChatGPT + focused non-edit control (generic) is never captured as a prompt", () => {
+  const pane = { controlType: "ControlType.Pane", name: "Sidebar", text: "Chat history" };
+  assert.equal(classifyTarget("chatgpt.com", "chatgpt.com", pane), null);
+});
+
+test("ChatGPT + focused Edit/ComboBox/Document composer is eligible for prompt capture", () => {
+  for (const controlType of ["ControlType.Edit", "ControlType.ComboBox", "ControlType.Document"]) {
+    const composer = editField({
+      controlType,
+      name: "Ask anything",
+      text: "Explain what a reverse shell is",
+    });
+    const t = classifyTarget("chatgpt.com", "chatgpt.com", composer);
+    assert.equal(t && t.kind, "prompt", `${controlType} should be eligible`);
+  }
+});
+
+test("real search text (not an echo of the field's own label) is still captured", () => {
+  const field = searchField({ name: "Search", text: "what is cyber security" });
+  const t = classifyTarget("google.com", "google.com", field);
+  assert.equal(t && t.kind, "search");
 });
 
 // --- looksPrivate --------------------------------------------------------
@@ -386,5 +466,82 @@ test("flow: a search on a heavy page keeps working even if some ticks can't read
   await h.set(fg("news.example.com"), searchInput("")); // box cleared on submit
   await h.set(null, null);
   assert.deepEqual(h.emitted.map((e) => e.text), ["election results"]);
+  h.stop();
+});
+
+// --- flow: the exact reported bug scenarios — open the site, don't submit ---
+
+test("flow: opening Google and clicking the address bar (no search typed) -> no capture", async () => {
+  const h = await harness([]);
+  const addressBar = {
+    ...editField({ name: "Address and search bar", automationId: "omnibox" }),
+    text: "Address and search bar",
+  };
+  await h.set(fg("google.com"), addressBar);
+  await h.set(fg("google.com"), addressBar);
+  await h.set(null, null);
+  assert.deepEqual(h.emitted, []);
+  h.stop();
+});
+
+test("flow: opening ChatGPT without typing anything -> no capture", async () => {
+  const h = await harness([]);
+  const composerPlaceholder = { ...promptInput("Ask anything"), name: "Ask anything" };
+  await h.set(fg("chatgpt.com"), composerPlaceholder);
+  await h.set(fg("chatgpt.com"), composerPlaceholder);
+  await h.set(null, null);
+  assert.deepEqual(h.emitted, []);
+  h.stop();
+});
+
+test("flow: focus briefly lands on a ChatGPT heading/button, not the composer -> no capture", async () => {
+  const h = await harness([]);
+  const heading = { controlType: "ControlType.Text", name: "Chat with ChatGPT", text: "Chat with ChatGPT" };
+  await h.set(fg("chatgpt.com"), heading);
+  await h.set(null, null);
+  assert.deepEqual(h.emitted, []);
+  h.stop();
+});
+
+test("flow: an untouched search box (placeholder-echoed value) is never captured", async () => {
+  const h = await harness([]);
+  // Real UIA readings derive the control's accessible Name from its
+  // placeholder too, so an untouched box reports name === text === "Search".
+  const placeholderEcho = { ...searchInput("Search"), name: "Search" };
+  await h.set(fg("bing.com"), placeholderEcho);
+  await h.set(null, null);
+  assert.deepEqual(h.emitted, []);
+  h.stop();
+});
+
+test("flow: a real ChatGPT prompt is still captured exactly once after the placeholder-echo fix", async () => {
+  const h = await harness([]);
+  // Real UIA readings expose the composer's placeholder as both its
+  // accessible Name and its (empty-state) Value.
+  const placeholder = { ...promptInput("Ask anything"), name: "Ask anything" };
+  await h.set(fg("chatgpt.com"), placeholder); // page just loaded
+  await h.set(fg("chatgpt.com"), promptInput("Explain what a TURN server is")); // user typed + this is now the reading
+  await h.set(fg("chatgpt.com"), promptInput("Explain what a TURN server is")); // stable while sending
+  await h.set(null, null); // sent -> focus leaves / composer clears
+  assert.deepEqual(
+    h.emitted.map((e) => [e.domain, e.kind, e.text]),
+    [["chatgpt.com", "prompt", "Explain what a TURN server is"]],
+  );
+  h.stop();
+});
+
+test("flow: a real Google search is still captured exactly once after the address-bar fix", async () => {
+  const h = await harness([]);
+  await h.set(fg("google.com"), {
+    ...editField({ name: "Address and search bar", automationId: "omnibox" }),
+    text: "Address and search bar",
+  }); // page load, address bar focused
+  await h.set(fg("google.com"), searchInput("what is cyber security"));
+  await h.set(fg("google.com"), searchInput("")); // submitted
+  await h.set(null, null);
+  assert.deepEqual(
+    h.emitted.map((e) => [e.domain, e.kind, e.text]),
+    [["google.com", "search", "what is cyber security"]],
+  );
   h.stop();
 });

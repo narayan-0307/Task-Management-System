@@ -1,6 +1,9 @@
 const passport = require("passport");
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
 const { User, AuthIdentity, Organization, OrganizationMember } = require("../models");
+const {
+  ensureOrganizationChat,
+} = require("../services/organizationChatProvisioning");
 
 if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
   passport.use(
@@ -51,6 +54,18 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
               user_id: user.id,
               role: "owner",
             });
+
+            // Best-effort: this flow has no surrounding transaction, so a
+            // chat provisioning failure must not block Google sign-up --
+            // the org and its owner membership already exist.
+            try {
+              await ensureOrganizationChat(organization.id);
+            } catch (chatError) {
+              console.error(
+                `Organization chat provisioning failed for organization ${organization.id}:`,
+                chatError,
+              );
+            }
           }
 
           // 3. Link this Google identity to the (existing or new) user.

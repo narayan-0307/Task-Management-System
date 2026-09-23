@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
+  MessageSquare,
   MoreVertical,
   Pencil,
   Paperclip,
@@ -46,6 +47,7 @@ import {
   deleteSubtask,
 } from "../../api/subtasks.js";
 import { listProjectMembers } from "../../api/projectMembers.js";
+import { listTaskMembers } from "../../api/taskMembers.js";
 import { getSocket } from "../../lib/socket.js";
 import { useAuth } from "../../context/AuthContext.jsx";
 import { useToast } from "../../context/ToastContext.jsx";
@@ -55,9 +57,12 @@ import {
   canEditSubtaskFully,
   canUpdateSubtaskStatus,
   canDeleteComment,
+  canManageTaskMembers,
 } from "../../config/permissions.js";
 import { API_ORIGIN } from "../../api/client.js";
 import TaskActivityTab from "../../components/tasks/TaskActivityTab.jsx";
+import TaskChatDrawer from "../../components/tasks/TaskChatDrawer.jsx";
+import TaskMembersTab from "../../components/tasks/TaskMembersTab.jsx";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -87,18 +92,24 @@ function renderCommentContent(content, members = []) {
   members.forEach((member) => {
     const u = member.user;
     if (u) {
-      const nameStr = `@${u.first_name || ""}_${u.last_name || ""}`.trim().replace(/\s+/g, "_");
+      const nameStr = `@${u.first_name || ""}_${u.last_name || ""}`
+        .trim()
+        .replace(/\s+/g, "_");
       mentionMap[nameStr.toLowerCase()] = {
         mention: nameStr,
-        displayName: `${u.first_name || ""} ${u.last_name || ""}`.trim()
+        displayName: `${u.first_name || ""} ${u.last_name || ""}`.trim(),
       };
     }
   });
 
-  const sortedMentions = Object.keys(mentionMap).sort((a, b) => b.length - a.length);
+  const sortedMentions = Object.keys(mentionMap).sort(
+    (a, b) => b.length - a.length,
+  );
   if (sortedMentions.length === 0) return content;
 
-  const escapedMentions = sortedMentions.map(m => m.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'));
+  const escapedMentions = sortedMentions.map((m) =>
+    m.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"),
+  );
   const pattern = new RegExp(`(${escapedMentions.join("|")})`, "gi");
 
   const parts = content.split(pattern);
@@ -143,6 +154,7 @@ export default function TaskDetails() {
   // ── task state ──
   const [task, setTask] = useState(null);
   const [members, setMembers] = useState([]);
+  const [taskMembers, setTaskMembers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -150,6 +162,7 @@ export default function TaskDetails() {
   const [editOpen, setEditOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [chatDrawerOpen, setChatDrawerOpen] = useState(false);
 
   // ── subtask modal/dialog state ──
   const [subtaskModalOpen, setSubtaskModalOpen] = useState(false);
@@ -194,7 +207,8 @@ export default function TaskDetails() {
     return members.filter((member) => {
       const u = member.user;
       if (!u) return false;
-      const fullName = `${u.first_name || ""} ${u.last_name || ""}`.toLowerCase();
+      const fullName =
+        `${u.first_name || ""} ${u.last_name || ""}`.toLowerCase();
       const email = (u.email || "").toLowerCase();
       const query = mentionSearch.toLowerCase();
       return fullName.includes(query) || email.includes(query);
@@ -210,14 +224,23 @@ export default function TaskDetails() {
     Promise.all([
       getTask(projectId, taskId),
       listProjectMembers(projectId),
+      listTaskMembers(projectId, taskId),
       listSubtasks(projectId, taskId),
       listComments(projectId, taskId),
       listAttachments(projectId, taskId),
     ])
       .then(
-        ([taskRes, membersRes, subtasksRes, commentsRes, attachmentsRes]) => {
+        ([
+          taskRes,
+          membersRes,
+          taskMembersRes,
+          subtasksRes,
+          commentsRes,
+          attachmentsRes,
+        ]) => {
           setTask(taskRes.data.task);
           setMembers(membersRes.data.members);
+          setTaskMembers(taskMembersRes.data.members);
           setSubtasks(subtasksRes.data.subtasks);
           setComments(commentsRes.data.comments);
           setAttachments(attachmentsRes.data.attachments);
@@ -450,14 +473,20 @@ export default function TaskDetails() {
         const comment = res.data.comment;
 
         if (commentFile) {
-          return uploadCommentAttachment(projectId, taskId, comment.id, commentFile)
+          return uploadCommentAttachment(
+            projectId,
+            taskId,
+            comment.id,
+            commentFile,
+          )
             .then((attachRes) => ({
               ...comment,
               attachments: [attachRes.data.attachment],
             }))
             .catch((err) => {
               toast.error(
-                err.response?.data?.message || "Comment sent, but file failed to upload.",
+                err.response?.data?.message ||
+                  "Comment sent, but file failed to upload.",
               );
               return comment;
             });
@@ -518,9 +547,13 @@ export default function TaskDetails() {
   function selectMentionedMember(member) {
     if (mentionTriggerIndex === -1) return;
     const u = member.user || member;
-    const nameStr = `${u.first_name || ""}_${u.last_name || ""}`.trim().replace(/\s+/g, "_");
+    const nameStr = `${u.first_name || ""}_${u.last_name || ""}`
+      .trim()
+      .replace(/\s+/g, "_");
     const beforeMention = commentText.slice(0, mentionTriggerIndex);
-    const afterCursor = commentText.slice(mentionTriggerIndex + mentionSearch.length + 1);
+    const afterCursor = commentText.slice(
+      mentionTriggerIndex + mentionSearch.length + 1,
+    );
 
     setCommentText(`${beforeMention}@${nameStr} ${afterCursor}`);
     setShowMentionDropdown(false);
@@ -537,7 +570,10 @@ export default function TaskDetails() {
       }
       if (e.key === "ArrowUp") {
         e.preventDefault();
-        setActiveMentionIndex((prev) => (prev - 1 + filteredMembers.length) % filteredMembers.length);
+        setActiveMentionIndex(
+          (prev) =>
+            (prev - 1 + filteredMembers.length) % filteredMembers.length,
+        );
         return;
       }
       if (e.key === "Enter") {
@@ -700,6 +736,15 @@ export default function TaskDetails() {
                       )}
                       <button
                         type="button"
+                        onClick={() => setChatDrawerOpen(true)}
+                        aria-label="Open task chat"
+                        title="Task Chat"
+                        className="rounded-lg p-2 text-txt-muted transition hover:bg-surface-2 hover:text-txt-primary"
+                      >
+                        <MessageSquare size={17} />
+                      </button>
+                      <button
+                        type="button"
                         className="rounded-lg p-2 text-txt-muted transition hover:bg-surface-2 hover:text-txt-primary"
                         title="Share task"
                       >
@@ -807,10 +852,11 @@ export default function TaskDetails() {
                       onDragLeave={() => setDragOver(false)}
                       onDrop={handleDrop}
                       onClick={() => fileInputRef.current?.click()}
-                      className={`cursor-pointer rounded-xl border-2 border-dashed px-4 py-5 text-center transition ${dragOver
+                      className={`cursor-pointer rounded-xl border-2 border-dashed px-4 py-5 text-center transition ${
+                        dragOver
                           ? "border-accentblue bg-accentblue-soft"
                           : "border-hair hover:border-hair"
-                        }`}
+                      }`}
                     >
                       <Upload
                         size={18}
@@ -859,15 +905,17 @@ export default function TaskDetails() {
                       ["subtasks", "Subtasks"],
                       ["comments", "Comments"],
                       ["activity", "Activity"],
+                      ["members", "Members"],
                     ].map(([key, label]) => (
                       <button
                         key={key}
                         type="button"
                         onClick={() => setActiveTab(key)}
-                        className={`relative pb-3 text-sm font-medium transition ${activeTab === key
+                        className={`relative pb-3 text-sm font-medium transition ${
+                          activeTab === key
                             ? "text-accentblue"
                             : "text-txt-muted hover:text-txt-primary"
-                          }`}
+                        }`}
                       >
                         {label}
                         {key === "subtasks" && subtasks.length > 0 && (
@@ -941,7 +989,10 @@ export default function TaskDetails() {
                           const isDeleting = !!subtaskDeleting[subtask.id];
 
                           // Only assigned member or managers can toggle status
-                          const canToggle = canUpdateSubtaskStatus(user, subtask);
+                          const canToggle = canUpdateSubtaskStatus(
+                            user,
+                            subtask,
+                          );
 
                           // Warn owner if task is due within 2 days and subtask is incomplete
                           const isDueSoon =
@@ -956,173 +1007,179 @@ export default function TaskDetails() {
 
                           return (
                             <div key={subtask.id}>
-                            <div
-                              className={`group flex items-center justify-between gap-3 rounded-lg border px-3 py-3 transition ${
-                                isUpdating || isDeleting
-                                  ? "border-hair opacity-60"
-                                  : isDueSoon
-                                    ? "border-amber-500/30 bg-amber-500/10"
-                                    : "border-hair bg-surface-2 hover:border-hair hover:bg-surface-3"
+                              <div
+                                className={`group flex items-center justify-between gap-3 rounded-lg border px-3 py-3 transition ${
+                                  isUpdating || isDeleting
+                                    ? "border-hair opacity-60"
+                                    : isDueSoon
+                                      ? "border-amber-500/30 bg-amber-500/10"
+                                      : "border-hair bg-surface-2 hover:border-hair hover:bg-surface-3"
                                 }`}
-                            >
-                              {/* Left: checkbox + text */}
-                              <button
-                                type="button"
-                                disabled={
-                                  isUpdating || isDeleting || !canToggle
-                                }
-                                onClick={() =>
-                                  handleSubtaskStatusToggle(subtask)
-                                }
-                                title={
-                                  canToggle
-                                    ? STATUS_CYCLE_LABEL[subtask.status]
-                                    : "Not assigned to you"
-                                }
-                                className={`flex min-w-0 flex-1 items-center gap-3 text-left ${!canToggle ? "cursor-default" : ""
-                                  }`}
                               >
-                                {/* Checkbox */}
-                                <div
-                                  className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${completed
-                                      ? "border-accentblue bg-accentblue"
-                                      : subtask.status === "in_progress"
-                                        ? "border-blue-400 bg-blue-500/15"
-                                        : "border-hair bg-surface-1"
-                                    }`}
-                                >
-                                  {completed && (
-                                    <CheckCircle2
-                                      size={12}
-                                      className="text-white"
-                                    />
-                                  )}
-                                  {subtask.status === "in_progress" && (
-                                    <div className="h-2 w-2 rounded-full bg-blue-400" />
-                                  )}
-                                </div>
-
-                                {/* Title + description */}
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5">
-                                    <p
-                                      className={`text-sm ${completed
-                                          ? "text-txt-muted line-through"
-                                          : "text-txt-primary"
-                                        }`}
-                                    >
-                                      {subtask.title}
-                                    </p>
-                                    {/* Due-soon pill — visible to everyone */}
-                                    {isDueSoon && (
-                                      <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
-                                        Due soon
-                                      </span>
-                                    )}
-                                  </div>
-                                  {subtask.description && (
-                                    <p className="mt-0.5 truncate text-xs text-txt-muted">
-                                      {subtask.description}
-                                    </p>
-                                  )}
-                                  {Array.isArray(subtask.tags) &&
-                                    subtask.tags.length > 0 && (
-                                      <div className="mt-1 flex flex-wrap gap-1">
-                                        {subtask.tags.map((tag) => (
-                                          <span
-                                            key={tag.id}
-                                            className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-txt-muted"
-                                          >
-                                            {tag.name}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    )}
-                                </div>
-                              </button>
-
-                              {/* Right: assignee avatar + status badge + delete */}
-                              <div className="flex shrink-0 items-center gap-2">
-                                {/* Assignee avatar — owners/admins/managers see who owns this */}
-                                {canManage && subtask.assignee && (
-                                  <div title={getUserName(subtask.assignee)}>
-                                    <Avatar
-                                      firstName={subtask.assignee.first_name}
-                                      lastName={subtask.assignee.last_name}
-                                      avatarUrl={subtask.assignee.avatar_url}
-                                      size="xs"
-                                    />
-                                  </div>
-                                )}
-
-                                {/* Unassigned warning — nudges owner to assign someone */}
-                                {canManage && !subtask.assignee && (
-                                  <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-txt-muted">
-                                    Unassigned
-                                  </span>
-                                )}
-
-                                <span
-                                  className={`rounded-full px-2 py-1 text-xs font-medium ${completed
-                                      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                                      : subtask.status === "in_progress"
-                                        ? "bg-blue-500/15 text-blue-700 dark:text-blue-300"
-                                        : "bg-surface-2 text-txt-muted"
-                                    }`}
-                                >
-                                  {completed
-                                    ? "Completed"
-                                    : subtask.status === "in_progress"
-                                      ? "In Progress"
-                                      : "To Do"}
-                                </span>
-
-                                {/* Delete — management roles only */}
-                                {canManage && (
-                                  <button
-                                    type="button"
-                                    disabled={isDeleting}
-                                    onClick={() => setSubtaskToDelete(subtask)}
-                                    className="hidden rounded p-1 text-txt-muted transition hover:bg-red-500/10 hover:text-red-500 group-hover:flex"
-                                    title="Delete subtask"
-                                  >
-                                    <Trash2 size={13} />
-                                  </button>
-                                )}
-
-                                {/* Expand/collapse — comments & attachments */}
+                                {/* Left: checkbox + text */}
                                 <button
                                   type="button"
+                                  disabled={
+                                    isUpdating || isDeleting || !canToggle
+                                  }
                                   onClick={() =>
-                                    setExpandedSubtaskId((prev) =>
-                                      prev === subtask.id ? null : subtask.id,
-                                    )
+                                    handleSubtaskStatusToggle(subtask)
                                   }
-                                  className="rounded p-1 text-txt-muted transition hover:bg-surface-2 hover:text-txt-primary"
                                   title={
-                                    isExpanded
-                                      ? "Hide comments & attachments"
-                                      : "Show comments & attachments"
+                                    canToggle
+                                      ? STATUS_CYCLE_LABEL[subtask.status]
+                                      : "Not assigned to you"
                                   }
+                                  className={`flex min-w-0 flex-1 items-center gap-3 text-left ${
+                                    !canToggle ? "cursor-default" : ""
+                                  }`}
                                 >
-                                  {isExpanded ? (
-                                    <ChevronDown size={14} />
-                                  ) : (
-                                    <ChevronRight size={14} />
-                                  )}
-                                </button>
-                              </div>
-                            </div>
+                                  {/* Checkbox */}
+                                  <div
+                                    className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition ${
+                                      completed
+                                        ? "border-accentblue bg-accentblue"
+                                        : subtask.status === "in_progress"
+                                          ? "border-blue-400 bg-blue-500/15"
+                                          : "border-hair bg-surface-1"
+                                    }`}
+                                  >
+                                    {completed && (
+                                      <CheckCircle2
+                                        size={12}
+                                        className="text-white"
+                                      />
+                                    )}
+                                    {subtask.status === "in_progress" && (
+                                      <div className="h-2 w-2 rounded-full bg-blue-400" />
+                                    )}
+                                  </div>
 
-                            {isExpanded && (
-                              <div className="mt-1.5">
-                                <SubtaskDetailPanel
-                                  projectId={projectId}
-                                  taskId={taskId}
-                                  subtask={subtask}
-                                />
+                                  {/* Title + description */}
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5">
+                                      <p
+                                        className={`text-sm ${
+                                          completed
+                                            ? "text-txt-muted line-through"
+                                            : "text-txt-primary"
+                                        }`}
+                                      >
+                                        {subtask.title}
+                                      </p>
+                                      {/* Due-soon pill — visible to everyone */}
+                                      {isDueSoon && (
+                                        <span className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-300">
+                                          Due soon
+                                        </span>
+                                      )}
+                                    </div>
+                                    {subtask.description && (
+                                      <p className="mt-0.5 truncate text-xs text-txt-muted">
+                                        {subtask.description}
+                                      </p>
+                                    )}
+                                    {Array.isArray(subtask.tags) &&
+                                      subtask.tags.length > 0 && (
+                                        <div className="mt-1 flex flex-wrap gap-1">
+                                          {subtask.tags.map((tag) => (
+                                            <span
+                                              key={tag.id}
+                                              className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] font-medium text-txt-muted"
+                                            >
+                                              {tag.name}
+                                            </span>
+                                          ))}
+                                        </div>
+                                      )}
+                                  </div>
+                                </button>
+
+                                {/* Right: assignee avatar + status badge + delete */}
+                                <div className="flex shrink-0 items-center gap-2">
+                                  {/* Assignee avatar — owners/admins/managers see who owns this */}
+                                  {canManage && subtask.assignee && (
+                                    <div title={getUserName(subtask.assignee)}>
+                                      <Avatar
+                                        firstName={subtask.assignee.first_name}
+                                        lastName={subtask.assignee.last_name}
+                                        avatarUrl={subtask.assignee.avatar_url}
+                                        size="xs"
+                                      />
+                                    </div>
+                                  )}
+
+                                  {/* Unassigned warning — nudges owner to assign someone */}
+                                  {canManage && !subtask.assignee && (
+                                    <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-txt-muted">
+                                      Unassigned
+                                    </span>
+                                  )}
+
+                                  <span
+                                    className={`rounded-full px-2 py-1 text-xs font-medium ${
+                                      completed
+                                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                                        : subtask.status === "in_progress"
+                                          ? "bg-blue-500/15 text-blue-700 dark:text-blue-300"
+                                          : "bg-surface-2 text-txt-muted"
+                                    }`}
+                                  >
+                                    {completed
+                                      ? "Completed"
+                                      : subtask.status === "in_progress"
+                                        ? "In Progress"
+                                        : "To Do"}
+                                  </span>
+
+                                  {/* Delete — management roles only */}
+                                  {canManage && (
+                                    <button
+                                      type="button"
+                                      disabled={isDeleting}
+                                      onClick={() =>
+                                        setSubtaskToDelete(subtask)
+                                      }
+                                      className="hidden rounded p-1 text-txt-muted transition hover:bg-red-500/10 hover:text-red-500 group-hover:flex"
+                                      title="Delete subtask"
+                                    >
+                                      <Trash2 size={13} />
+                                    </button>
+                                  )}
+
+                                  {/* Expand/collapse — comments & attachments */}
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedSubtaskId((prev) =>
+                                        prev === subtask.id ? null : subtask.id,
+                                      )
+                                    }
+                                    className="rounded p-1 text-txt-muted transition hover:bg-surface-2 hover:text-txt-primary"
+                                    title={
+                                      isExpanded
+                                        ? "Hide comments & attachments"
+                                        : "Show comments & attachments"
+                                    }
+                                  >
+                                    {isExpanded ? (
+                                      <ChevronDown size={14} />
+                                    ) : (
+                                      <ChevronRight size={14} />
+                                    )}
+                                  </button>
+                                </div>
                               </div>
-                            )}
+
+                              {isExpanded && (
+                                <div className="mt-1.5">
+                                  <SubtaskDetailPanel
+                                    projectId={projectId}
+                                    taskId={taskId}
+                                    subtask={subtask}
+                                  />
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -1209,7 +1266,10 @@ export default function TaskDetails() {
                                       rel="noreferrer"
                                       className="flex w-fit items-center gap-2 rounded-lg border border-hair bg-surface-2 px-2.5 py-1.5 text-xs text-txt-muted transition hover:border-accentblue hover:bg-accentblue-soft hover:text-accentblue"
                                     >
-                                      <Paperclip size={13} className="shrink-0 text-txt-muted" />
+                                      <Paperclip
+                                        size={13}
+                                        className="shrink-0 text-txt-muted"
+                                      />
                                       <span className="max-w-[200px] truncate">
                                         {file.file_name}
                                       </span>
@@ -1240,36 +1300,47 @@ export default function TaskDetails() {
                         </div>
 
                         <div className="relative flex-1 rounded-xl border border-hair bg-surface-1 transition focus-within:border-accentblue focus-within:ring-1 focus-within:ring-accentblue/30">
-                          {showMentionDropdown && filteredMembers.length > 0 && (
-                            <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-lg border border-hair bg-surface-1 py-1 shadow-lg">
-                              {filteredMembers.map((member, idx) => {
-                                const u = member.user;
-                                if (!u) return null;
-                                const isSelected = idx === activeMentionIndex;
-                                return (
-                                  <div
-                                    key={member.id}
-                                    onClick={() => selectMentionedMember(member)}
-                                    onMouseEnter={() => setActiveMentionIndex(idx)}
-                                    className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs transition ${
-                                      isSelected ? "bg-accentblue-soft text-txt-primary" : "text-txt-primary hover:bg-surface-2"
-                                    }`}
-                                  >
-                                    <Avatar
-                                      firstName={u.first_name}
-                                      lastName={u.last_name}
-                                      avatarUrl={u.avatar_url}
-                                      size="xs"
-                                    />
-                                    <div className="min-w-0 flex-1">
-                                      <p className="font-semibold truncate">{u.first_name} {u.last_name}</p>
-                                      <p className="text-[10px] text-txt-muted truncate">{u.email}</p>
+                          {showMentionDropdown &&
+                            filteredMembers.length > 0 && (
+                              <div className="absolute bottom-full left-0 z-50 mb-1 max-h-48 w-64 overflow-y-auto rounded-lg border border-hair bg-surface-1 py-1 shadow-lg">
+                                {filteredMembers.map((member, idx) => {
+                                  const u = member.user;
+                                  if (!u) return null;
+                                  const isSelected = idx === activeMentionIndex;
+                                  return (
+                                    <div
+                                      key={member.id}
+                                      onClick={() =>
+                                        selectMentionedMember(member)
+                                      }
+                                      onMouseEnter={() =>
+                                        setActiveMentionIndex(idx)
+                                      }
+                                      className={`flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs transition ${
+                                        isSelected
+                                          ? "bg-accentblue-soft text-txt-primary"
+                                          : "text-txt-primary hover:bg-surface-2"
+                                      }`}
+                                    >
+                                      <Avatar
+                                        firstName={u.first_name}
+                                        lastName={u.last_name}
+                                        avatarUrl={u.avatar_url}
+                                        size="xs"
+                                      />
+                                      <div className="min-w-0 flex-1">
+                                        <p className="font-semibold truncate">
+                                          {u.first_name} {u.last_name}
+                                        </p>
+                                        <p className="text-[10px] text-txt-muted truncate">
+                                          {u.email}
+                                        </p>
+                                      </div>
                                     </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
+                                  );
+                                })}
+                              </div>
+                            )}
                           <textarea
                             ref={commentTextAreaRef}
                             value={commentText}
@@ -1311,7 +1382,9 @@ export default function TaskDetails() {
                               />
                               <button
                                 type="button"
-                                onClick={() => commentFileInputRef.current?.click()}
+                                onClick={() =>
+                                  commentFileInputRef.current?.click()
+                                }
                                 className="transition hover:text-txt-primary"
                                 title="Attach file"
                               >
@@ -1346,6 +1419,20 @@ export default function TaskDetails() {
                 {activeTab === "activity" && (
                   <div className="px-5 py-6">
                     <TaskActivityTab taskId={taskId} />
+                  </div>
+                )}
+
+                {/* Members tab */}
+                {activeTab === "members" && (
+                  <div className="px-5 py-6">
+                    <TaskMembersTab
+                      projectId={projectId}
+                      taskId={taskId}
+                      projectMembers={members}
+                      taskMembers={taskMembers}
+                      onChanged={fetchAll}
+                      canManage={canManageTaskMembers(user, task, members)}
+                    />
                   </div>
                 )}
               </div>
@@ -1561,6 +1648,14 @@ export default function TaskDetails() {
         parentTaskTitle={task?.title}
         projectMembers={members}
         onSaved={fetchAll}
+      />
+
+      <TaskChatDrawer
+        open={chatDrawerOpen}
+        onClose={() => setChatDrawerOpen(false)}
+        projectId={projectId}
+        taskId={taskId}
+        task={task}
       />
     </AppLayout>
   );

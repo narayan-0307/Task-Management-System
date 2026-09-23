@@ -29,6 +29,14 @@ const Attachment = sequelize.define(
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: true,
     },
+    message_id: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+    },
+    org_message_id: {
+      type: DataTypes.INTEGER.UNSIGNED,
+      allowNull: true,
+    },
     organization_id: {
       type: DataTypes.INTEGER.UNSIGNED,
       allowNull: false,

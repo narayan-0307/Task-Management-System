@@ -25,10 +25,12 @@
             let started = false;
             let connectTimer = null;
             let done = false;
+            let pendingIce = [];
 
             function teardown(label) {
                 if (done) return;
                 done = true;
+                pendingIce = [];
                 if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; }
                 try { if (stream) stream.getTracks().forEach((t) => t.stop()); } catch (e) {}
                 try { if (pc) pc.close(); } catch (e) {}
@@ -44,6 +46,10 @@
                 try {
                     await pc.setRemoteDescription({ type: "answer", sdp });
                     set("answer applied");
+                    for (const c of pendingIce) {
+                        try { await pc.addIceCandidate(c); } catch (e) {}
+                    }
+                    pendingIce = [];
                 } catch (e) {
                     window.liveScreen.sendError("setRemoteDescription: " + e.message);
                     teardown();
@@ -52,6 +58,10 @@
 
             window.liveScreen.onRemoteIce(async ({ candidate }) => {
                 if (!pc || !candidate) return;
+                if (!pc.remoteDescription) {
+                    pendingIce.push(candidate);
+                    return;
+                }
                 try { await pc.addIceCandidate(candidate); } catch (e) { /* non-fatal */ }
             });
 

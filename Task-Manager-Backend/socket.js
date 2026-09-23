@@ -13,6 +13,13 @@ const {
   MonitoringLiveScreenSession,
   MonitoringScreenshotRequest,
 } = require("./models");
+const {
+  canAccessTaskChat,
+  canAccessTaskChatViaMembership,
+} = require("./utils/taskChatAccess");
+const {
+  canAccessConversation,
+} = require("./utils/organizationChatAccess");
 const liveScreen = require("./services/monitoringLiveScreen");
 const monitoringScreenshot = require("./services/monitoringScreenshot");
 const {
@@ -79,21 +86,151 @@ function initSocket(server) {
       socket.leave(`project:${projectId}`);
     });
 
+    // Step 2D: `task:${taskId}` is the GENERAL task realtime room (comments,
+    // subtasks, subtask comments -- see commentController.js/
+    // subtaskController.js). It uses the broad canAccessTaskChat rule (org
+    // admin, task creator, assignee, or any project member), same as before
+    // Step 2C-2. Task Chat now has its OWN room/join below and is no longer
+    // gated through this handler.
     socket.on("task:join", async (taskId) => {
       try {
-        const task = await Task.findOne({
-          where: { id: taskId, organization_id: socket.user.organization_id },
-        });
-        if (task) {
-          socket.join(`task:${taskId}`);
+        const access = await canAccessTaskChat(socket.user.id, taskId);
+
+        if (!access.allowed) {
+          socket.emit("task:join:error", {
+            taskId,
+            message: "You do not have access to this task.",
+          });
+          return;
         }
+
+        if (
+          Number(access.task.organization_id) !==
+          Number(socket.user.organization_id)
+        ) {
+          socket.emit("task:join:error", {
+            taskId,
+            message: "You do not have access to this task.",
+          });
+          return;
+        }
+
+        socket.join(`task:${taskId}`);
       } catch (err) {
         console.error("task:join error:", err.message);
+
+        socket.emit("task:join:error", {
+          taskId,
+          message: "Unable to join task.",
+        });
       }
     });
 
     socket.on("task:leave", (taskId) => {
       socket.leave(`task:${taskId}`);
+    });
+
+    // Step 2D: `task-chat:${taskId}` is a SEPARATE room, used ONLY for Task
+    // Chat (`message:new`). TaskMember is the sole source of truth here --
+    // no org-admin/creator/assignee/project-member bypass, matching the REST
+    // Task Chat endpoints (canAccessTaskChatViaMembership).
+    socket.on("task:chat:join", async (taskId) => {
+      try {
+        const access = await canAccessTaskChatViaMembership(
+          socket.user.id,
+          taskId,
+        );
+
+        if (!access.allowed) {
+          socket.emit("task:chat:join:error", {
+            taskId,
+            message: "You do not have access to this task's chat.",
+          });
+          return;
+        }
+
+        if (
+          Number(access.task.organization_id) !==
+          Number(socket.user.organization_id)
+        ) {
+          socket.emit("task:chat:join:error", {
+            taskId,
+            message: "You do not have access to this task's chat.",
+          });
+          return;
+        }
+
+        socket.join(`task-chat:${taskId}`);
+      } catch (err) {
+        console.error("task:chat:join error:", err.message);
+
+        socket.emit("task:chat:join:error", {
+          taskId,
+          message: "Unable to join task chat.",
+        });
+      }
+    });
+
+    socket.on("task:chat:leave", (taskId) => {
+      socket.leave(`task-chat:${taskId}`);
+    });
+
+    // Organization Chat (Step 7) -- entirely separate room namespace from
+    // Task Chat (`task-chat:${taskId}`) and from the org-wide Activity feed
+    // room (`organization:${organizationId}`, joined automatically above).
+    // Every conversation (org_wide, direct, or group) uses the SAME room --
+    // `conversation:${conversationId}` -- and the SAME authorization rule:
+    // active OrganizationMember AND an explicit ConversationMember row.
+    // org_wide conversations are not a bypass; a membership row is still
+    // required, exactly like direct/group.
+    socket.on("orgchat:conversation:join", async (payload = {}) => {
+      const conversationId = payload && payload.conversationId;
+
+      try {
+        const access = await canAccessConversation(
+          socket.user.id,
+          conversationId,
+        );
+
+        if (!access.allowed) {
+          socket.emit("orgchat:conversation:join:error", {
+            conversationId,
+            message: "You do not have access to this conversation.",
+          });
+          return;
+        }
+
+        // conversation_id is never trusted from the client for room naming
+        // beyond this point -- access.conversation is the server-loaded
+        // record, and its organization is re-checked against the verified
+        // JWT identity (defense in depth for the multi-org-per-user schema).
+        if (
+          Number(access.conversation.organization_id) !==
+          Number(socket.user.organization_id)
+        ) {
+          socket.emit("orgchat:conversation:join:error", {
+            conversationId,
+            message: "You do not have access to this conversation.",
+          });
+          return;
+        }
+
+        socket.join(`conversation:${access.conversation.id}`);
+      } catch (err) {
+        console.error("orgchat:conversation:join error:", err.message);
+
+        socket.emit("orgchat:conversation:join:error", {
+          conversationId,
+          message: "Unable to join conversation.",
+        });
+      }
+    });
+
+    socket.on("orgchat:conversation:leave", (payload = {}) => {
+      const conversationId = payload && payload.conversationId;
+      if (conversationId) {
+        socket.leave(`conversation:${conversationId}`);
+      }
     });
 
     wireLiveScreenSocket(socket);
@@ -489,4 +626,114 @@ function getIO() {
   return io;
 }
 
-module.exports = { initSocket, getIO };
+function emitTaskMessage(taskId, message) {
+  if (!io) {
+    console.error("Task message emit failed: Socket.IO is not initialized.");
+    return false;
+  }
+
+  // Step 2D: Task Chat lives on its own room, separate from the general
+  // `task:${taskId}` room used by comments/subtasks.
+  io.to(`task-chat:${taskId}`).emit("message:new", message);
+  return true;
+}
+
+// Step 2C-2 (retargeted in Step 2D): called right after a TaskMember row is
+// removed (see removeTaskMember in controllers/taskMemberController.js) so
+// an already-connected socket cannot keep receiving/sending Task Chat
+// traffic for a task the user was just removed from. Only removes Task Chat
+// room membership — the socket connection itself is never touched, the
+// user's membership in the general `task:${taskId}` room is untouched, and
+// every socket the user has open (multiple tabs/devices) is evicted, since
+// they all sit in the same `task-chat:${taskId}` room independently.
+async function evictUserFromTaskRoom(userId, taskId) {
+  if (!io) return; // socket layer not running (e.g. tests, CLI scripts)
+
+  try {
+    const room = `task-chat:${taskId}`;
+    const sockets = await io.in(room).fetchSockets();
+
+    for (const socket of sockets) {
+      if (socket.user && Number(socket.user.id) === Number(userId)) {
+        socket.leave(room);
+        socket.emit("task:membership-removed", { task_id: Number(taskId) });
+      }
+    }
+  } catch (err) {
+    console.error("evictUserFromTaskRoom failed:", err.message);
+  }
+}
+
+// Organization Chat (Step 7) -- mirrors emitTaskMessage/evictUserFromTaskRoom
+// exactly, but targets the separate conversation:<id> room and never touches
+// task:<id>/task-chat:<id> or the organization:<id> Activity room.
+function emitOrgChatMessage(conversationId, message) {
+  if (!io) {
+    console.error(
+      "Organization chat message emit failed: Socket.IO is not initialized.",
+    );
+    return false;
+  }
+
+  io.to(`conversation:${conversationId}`).emit("orgchat:message:new", message);
+  return true;
+}
+
+// Step 28: mirrors emitOrgChatMessage exactly -- same room, same
+// never-throws safety guard -- but for an attachment uploaded against an
+// already-created message (uploadOrgChatAttachment in
+// organizationChatAttachmentController.js runs strictly after the message
+// exists, so this always fires after orgchat:message:new for the same
+// message). Never emitted from message creation itself.
+function emitOrgChatAttachment(conversationId, messageId, attachment) {
+  if (!io) {
+    console.error(
+      "Organization chat attachment emit failed: Socket.IO is not initialized.",
+    );
+    return false;
+  }
+
+  io.to(`conversation:${conversationId}`).emit("orgchat:attachment:new", {
+    conversation_id: conversationId,
+    message_id: messageId,
+    attachment,
+  });
+  return true;
+}
+
+// Called right after a ConversationMember row is removed (see
+// removeConversationMember in controllers/organizationChatController.js) so
+// an already-connected socket cannot keep receiving/sending Organization
+// Chat traffic for a conversation the user was just removed from. Every
+// socket the user has open (multiple tabs/devices) is evicted, since they
+// all sit in the same conversation:<id> room independently. Task Chat's
+// task-chat:<id> room and eviction are entirely untouched by this.
+async function evictUserFromConversationRoom(userId, conversationId) {
+  if (!io) return; // socket layer not running (e.g. tests, CLI scripts)
+
+  try {
+    const room = `conversation:${conversationId}`;
+    const sockets = await io.in(room).fetchSockets();
+
+    for (const socket of sockets) {
+      if (socket.user && Number(socket.user.id) === Number(userId)) {
+        socket.leave(room);
+        socket.emit("orgchat:conversation:membership-removed", {
+          conversation_id: Number(conversationId),
+        });
+      }
+    }
+  } catch (err) {
+    console.error("evictUserFromConversationRoom failed:", err.message);
+  }
+}
+
+module.exports = {
+  initSocket,
+  getIO,
+  emitTaskMessage,
+  evictUserFromTaskRoom,
+  emitOrgChatMessage,
+  emitOrgChatAttachment,
+  evictUserFromConversationRoom,
+};

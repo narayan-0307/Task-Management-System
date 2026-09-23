@@ -20,10 +20,19 @@ const {
   deleteProject,
 } = require("../controllers/projectController");
 const { addProjectMember } = require("../controllers/projectMemberController");
+const {
+  getTaskMembers,
+  addTaskMember,
+  removeTaskMember,
+} = require("../controllers/taskMemberController");
 const { createSubtask, getSubtasks, updateSubtask, deleteSubtask } = require("../controllers/subtaskController");
 const { getComments, createComment, deleteComment } = require("../controllers/commentController");
 const { uploadAttachment, getAttachments, deleteAttachment } = require("../controllers/attachmentController");
 const { getMyTasks, getMySubtasks } = require("../controllers/taskController");
+const {
+  getMessages,
+  createMessage,
+} = require("../controllers/taskChatController");
 const upload = require("../middleware/upload");
 const questionRoutes = require("./questionRoute");
 
@@ -109,6 +118,27 @@ router.delete(
   "/:projectId/tasks/:taskId",
   requireRole("owner", "admin", "manager"),
   deleteTask
+);
+
+// GET /api/projects/:projectId/tasks/:taskId/members
+router.get(
+  "/:projectId/tasks/:taskId/members",
+  requireRole("owner", "admin", "manager", "member", "client"),
+  getTaskMembers
+);
+
+// POST /api/projects/:projectId/tasks/:taskId/members
+router.post(
+  "/:projectId/tasks/:taskId/members",
+  requireRole("owner", "admin", "manager", "member"),
+  addTaskMember
+);
+
+// DELETE /api/projects/:projectId/tasks/:taskId/members/:userId
+router.delete(
+  "/:projectId/tasks/:taskId/members/:userId",
+  requireRole("owner", "admin", "manager", "member"),
+  removeTaskMember
 );
 
 // Get single project
@@ -270,4 +300,17 @@ router.post(
   uploadAttachment
 );
 
+// GET /api/projects/:projectId/tasks/:taskId/messages
+router.get(
+  "/:projectId/tasks/:taskId/messages",
+  requireRole("owner", "admin", "manager", "member", "client"),
+  getMessages
+);
+
+// POST /api/projects/:projectId/tasks/:taskId/messages
+router.post(
+  "/:projectId/tasks/:taskId/messages",
+  requireRole("owner", "admin", "manager", "member"),
+  createMessage
+);
 module.exports = router;

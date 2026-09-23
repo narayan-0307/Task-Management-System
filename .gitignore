@@ -23,3 +23,6 @@ logs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Runtime uploaded files
+Task-Manager-Backend/uploads/

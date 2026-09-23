@@ -6,6 +6,9 @@ const {
   OrganizationInvitation,
 } = require("../models");
 const { createActivity } = require("../utils/activity");
+const {
+  ensureOrganizationChat,
+} = require("../services/organizationChatProvisioning");
 
 
 // GET /api/organization/members
@@ -258,6 +261,12 @@ exports.acceptInvitation = async (req, res) => {
         transaction,
       }
     );
+
+    // Ensure the org-wide "HumanCare Team" conversation exists and this
+    // newly active member is in it. Joins this same transaction (not a
+    // second one) so a provisioning failure rolls back with everything
+    // else above rather than leaving a half-completed acceptance.
+    await ensureOrganizationChat(invitation.organization_id, { transaction });
 
     // Mark invitation as accepted
     invitation.status = "accepted";

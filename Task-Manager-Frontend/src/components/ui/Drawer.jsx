@@ -22,8 +22,17 @@ export default function Drawer({
   useEffect(() => {
     if (open) {
       setShouldRender(true);
-      const t = setTimeout(() => setVisible(true), 10);
-      return () => clearTimeout(t);
+      // Double rAF instead of a fixed setTimeout: the first frame lets the
+      // browser commit+paint the just-mounted (closed-position) children,
+      // the second then flips the transition classes — so the slide-in
+      // reliably starts from a painted baseline instead of racing an
+      // arbitrary delay against however long that initial paint takes.
+      let frameId = requestAnimationFrame(() => {
+        frameId = requestAnimationFrame(() => {
+          setVisible(true);
+        });
+      });
+      return () => cancelAnimationFrame(frameId);
     }
     setVisible(false);
     const t = setTimeout(() => setShouldRender(false), 300);

@@ -1,14 +1,30 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { User, Organization, AuthIdentity, OrganizationMember, OrganizationInvitation } = require("../models");
+const crypto = require("crypto");
+const { Op } = require("sequelize");
+
+const {
+  User,
+  Organization,
+  AuthIdentity,
+  OrganizationMember,
+  OrganizationInvitation,
+  PasswordResetToken,
+} = require("../models");
+
 const { sequelize } = require("../config/db");
 const { createActivity } = require("../utils/activity");
+const { sendEmail } = require("../services/email/emailService");
+const { passwordResetEmail } = require("../services/email/emailTemplates");
+const {
+  ensureOrganizationChat,
+} = require("../services/organizationChatProvisioning");
 
 function generateToken({ user, organizationId, role }) {
   return jwt.sign(
     { id: user.id, organization_id: organizationId, role },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+    { expiresIn: process.env.JWT_EXPIRES_IN || "7d" },
   );
 }
 
@@ -30,7 +46,10 @@ exports.register = async (req, res) => {
     const slug =
       company_name.toLowerCase().trim().replace(/\s+/g, "-") + "-" + Date.now();
 
-    const organization = await Organization.create({ name: company_name, slug });
+    const organization = await Organization.create({
+      name: company_name,
+      slug,
+    });
 
     const user = await User.create({
       first_name,
@@ -51,6 +70,18 @@ exports.register = async (req, res) => {
       user_id: user.id,
       role: "owner",
     });
+
+    // Best-effort: this flow has no surrounding transaction, so a chat
+    // provisioning failure must not fail registration -- the org and its
+    // owner membership already exist and are the source of truth.
+    try {
+      await ensureOrganizationChat(organization.id);
+    } catch (chatError) {
+      console.error(
+        `Organization chat provisioning failed for organization ${organization.id}:`,
+        chatError,
+      );
+    }
 
     const token = generateToken({
       user,
@@ -81,7 +112,9 @@ exports.login = async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required." });
+      return res
+        .status(400)
+        .json({ message: "Email and password are required." });
     }
 
     const user = await User.findOne({ where: { email } });
@@ -108,7 +141,9 @@ exports.login = async (req, res) => {
       where: { user_id: user.id, is_active: true },
     });
     if (!membership) {
-      return res.status(403).json({ message: "No active organization membership found." });
+      return res
+        .status(403)
+        .json({ message: "No active organization membership found." });
     }
 
     user.last_login_at = new Date();
@@ -131,13 +166,13 @@ exports.login = async (req, res) => {
         organization_id: membership.organization_id,
       },
     });
-} catch (error) {
-  console.error("LOGIN ERROR:", error);
-  console.error("SQL MESSAGE:", error.original?.sqlMessage);
-  console.error("SQL:", error.sql);
+  } catch (error) {
+    console.error("LOGIN ERROR:", error);
+    console.error("SQL MESSAGE:", error.original?.sqlMessage);
+    console.error("SQL:", error.sql);
 
-  res.status(500).json({ message: "Server error during login." });
-}
+    res.status(500).json({ message: "Server error during login." });
+  }
 };
 
 // GET /api/auth/google/callback
@@ -244,7 +279,7 @@ exports.registerWithInvitation = async (req, res) => {
       },
       {
         transaction,
-      }
+      },
     );
 
     // 5. Create password identity
@@ -258,7 +293,7 @@ exports.registerWithInvitation = async (req, res) => {
       },
       {
         transaction,
-      }
+      },
     );
 
     // 6. Add user to invited organization
@@ -272,8 +307,14 @@ exports.registerWithInvitation = async (req, res) => {
       },
       {
         transaction,
-      }
+      },
     );
+
+    // 6b. Ensure the org-wide "HumanCare Team" conversation exists and the
+    // new active member is in it. Joins this same transaction (not a
+    // second one) so a provisioning failure rolls back with everything
+    // else above rather than leaving a half-completed acceptance.
+    await ensureOrganizationChat(invitation.organization_id, { transaction });
 
     // 7. Mark invitation accepted
     invitation.status = "accepted";
@@ -357,5 +398,184 @@ exports.getMe = async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Server error." });
+  }
+};
+
+// POST /api/auth/forgot-password
+// Sends a password reset link to the user's email.
+exports.forgotPassword = async (req, res) => {
+  try {
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+
+    if (!email) {
+      return res.status(400).json({
+        message: "Email is required.",
+      });
+    }
+
+    const user = await User.findOne({
+      where: { email },
+      attributes: ["id", "first_name", "last_name", "email"],
+    });
+
+    // Always return the same response for unknown emails.
+    // This prevents account enumeration.
+    if (!user) {
+      return res.json({
+        message:
+          "If an account exists with this email, a reset link has been sent.",
+      });
+    }
+
+    // Invalidate any previous unused reset tokens for this user.
+    await PasswordResetToken.update(
+      { used_at: new Date() },
+      {
+        where: {
+          user_id: user.id,
+          used_at: null,
+        },
+      },
+    );
+
+    // Generate a random token for the URL.
+    const rawToken = crypto.randomBytes(32).toString("hex");
+
+    // Store only the hash in the database.
+    const tokenHash = crypto
+      .createHash("sha256")
+      .update(rawToken)
+      .digest("hex");
+
+    // Reset link expires in 15 minutes.
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    await PasswordResetToken.create({
+      user_id: user.id,
+      token_hash: tokenHash,
+      expires_at: expiresAt,
+    });
+
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+
+    const resetUrl = `${frontendUrl}/reset-password?token=${rawToken}`;
+
+    const recipientName =
+      `${user.first_name || ""} ${user.last_name || ""}`.trim() || user.email;
+
+    const emailContent = passwordResetEmail({
+      recipientName,
+      resetUrl,
+    });
+
+    try {
+      await sendEmail({
+        to: user.email,
+        subject: emailContent.subject,
+        text: emailContent.text,
+        html: emailContent.html,
+      });
+    } catch (emailError) {
+      console.error(
+        `Password reset email failed for ${user.email}:`,
+        emailError.message,
+      );
+    }
+
+    return res.json({
+      message:
+        "If an account exists with this email, a reset link has been sent.",
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+
+    return res.status(500).json({
+      message: "Server error while processing password reset request.",
+    });
+  }
+};
+
+// POST /api/auth/reset-password
+// Consumes a password reset token and sets a new local password.
+exports.resetPassword = async (req, res) => {
+  const { token, password } = req.body;
+
+  if (!token) {
+    return res.status(400).json({ message: "Token is required." });
+  }
+
+  if (!password) {
+    return res.status(400).json({ message: "Password is required." });
+  }
+
+  if (password.length < 8) {
+    return res
+      .status(400)
+      .json({ message: "Password must be at least 8 characters." });
+  }
+
+  const invalidTokenResponse = () =>
+    res.status(400).json({
+      message: "This password reset link is invalid or has expired.",
+    });
+
+  try {
+    const tokenHash = crypto.createHash("sha256").update(token).digest("hex");
+
+    const resetToken = await PasswordResetToken.findOne({
+      where: { token_hash: tokenHash, used_at: null },
+    });
+
+    if (!resetToken || new Date(resetToken.expires_at) <= new Date()) {
+      return invalidTokenResponse();
+    }
+
+    const authIdentity = await AuthIdentity.findOne({
+      where: { user_id: resetToken.user_id, provider: "local" },
+    });
+
+    if (!authIdentity) {
+      return invalidTokenResponse();
+    }
+
+    const password_hash = await bcrypt.hash(password, 10);
+
+    const transaction = await sequelize.transaction();
+
+    try {
+      authIdentity.password_hash = password_hash;
+      await authIdentity.save({ transaction });
+
+      resetToken.used_at = new Date();
+      await resetToken.save({ transaction });
+
+      // Invalidate any other unused reset tokens for this user.
+      await PasswordResetToken.update(
+        { used_at: new Date() },
+        {
+          where: {
+            user_id: resetToken.user_id,
+            used_at: null,
+            id: { [Op.ne]: resetToken.id },
+          },
+          transaction,
+        },
+      );
+
+      await transaction.commit();
+    } catch (transactionError) {
+      await transaction.rollback();
+      throw transactionError;
+    }
+
+    return res.json({ message: "Password has been reset successfully." });
+  } catch (error) {
+    console.error("Reset password error:", error.message);
+
+    return res.status(500).json({
+      message: "Server error while resetting password.",
+    });
   }
 };

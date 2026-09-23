@@ -17,6 +17,8 @@ const questionRoutes = require("./routes/questionRoute");
 const monitoringRoutes = require("./routes/monitoringRoute");
 const activityRoutes = require("./routes/activityRoutes");
 const userRoutes = require("./routes/userRoutes");
+const organizationChatRoutes = require("./routes/organizationChatRoutes");
+const organizationChatAttachmentRoutes = require("./routes/organizationChatAttachmentRoutes");
 const monitoringRecomputeRunner = require("./services/monitoringRecomputeRunner");
 const monitoringContentRetention = require("./services/monitoringContentRetention");
 
@@ -70,6 +72,8 @@ app.use("/api/questions", questionRoutes);
 app.use("/api/monitoring", monitoringRoutes);
 app.use("/api/activities", activityRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/chat", organizationChatRoutes);
+app.use("/api/chat", organizationChatAttachmentRoutes);
 
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);

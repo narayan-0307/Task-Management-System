@@ -13,12 +13,12 @@ and the production host suspends it.**
 - `monitoringRecomputeRunner.start()` schedules `setInterval` drain loops (every
   30 s) that are `.unref()`'d. On Hostinger (Phusion Passenger) the Node app is
   spun **down when idle** and respawned per request, so a 30 s background loop
-  rarely completes a cycle — and the moment it *would* (a quiet period ≥ 45 s
+  rarely completes a cycle — and the moment it _would_ (a quiet period ≥ 45 s
   after the last event, once the ingest debounce settles) is exactly when
   Passenger has killed the process.
 - Contributing: the ingest debounce (`not_before = now + 45 s`) keeps pushing the
   queue row's due-time forward while the agent is active, so whenever the process
-  *is* alive the row isn't due yet; whenever the row *is* due the process is
+  _is_ alive the row isn't due yet; whenever the row _is_ due the process is
   asleep.
 - Also possible in this class of failure: a row left in `status = 'running'` by a
   worker that was killed mid-derive is never reclaimed (`claimOne` only looks at
@@ -33,11 +33,11 @@ This was purely a runtime/trigger problem.
 
 All in `Task-Manager-Backend`:
 
-| File | Change |
-|---|---|
+| File                                    | Change                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `services/monitoringRecomputeRunner.js` | • **`kick()`** — fire-and-forget opportunistic drain, called from the event-ingest request path. This is now the primary trigger: every batch of events that reaches the server nudges the queue, independent of the (suspendable) background timer. Never blocks or fails the request; `drainOnce()`'s guard prevents overlap.<br>• **`reclaimStaleRunning()`** — at the top of every drain, rows stuck in `'running'` longer than `MONITORING_RUNNING_STALE_MS` (default 10 min) are returned to `'pending'` so a killed-mid-derive worker can't orphan a day.<br>• **drain-stall watchdog** — if the `draining` lock is held longer than `MONITORING_DRAIN_STALL_MS` (default 3 min) the next caller force-resets it, so one hung derive can't permanently wedge the queue.<br>• **`status()`** — `{ enabled, started, draining, … }` for diagnostics.<br>• Clearer startup log (`DISABLED by MONITORING_RECOMPUTE_RUNNER_ENABLED=false` vs `started`). |
-| `controllers/monitoringController.js` | • `submitMonitoringEvents` calls `monitoringRecomputeRunner.kick()` after a successful ingest.<br>• **New** `triggerMonitoringRecompute` — the `POST /api/monitoring/recompute` handler. |
-| `routes/monitoringRoute.js` | **New** `POST /api/monitoring/recompute` (`requireAuth` + `requireRole("owner","admin")`). |
+| `controllers/monitoringController.js`   | • `submitMonitoringEvents` calls `monitoringRecomputeRunner.kick()` after a successful ingest.<br>• **New** `triggerMonitoringRecompute` — the `POST /api/monitoring/recompute` handler.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `routes/monitoringRoute.js`             | **New** `POST /api/monitoring/recompute` (`requireAuth` + `requireRole("owner","admin")`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 The background `setInterval` runner is kept as-is — it's now a backstop, not the
 only path. `nightlyPass` (provisional-session finalisation) is unchanged.
@@ -60,7 +60,7 @@ Owner/admin. Body (all optional): `{ date?: "YYYY-MM-DD", agent_id?, user_id? }`
    are live).
 3. **Force the stuck day through** — as an owner, call:
    ```
-   curl -X POST https://darkviolet-cobra-939760.hostingersite.com/api/monitoring/recompute \
+   curl -X POST http://localhost:5000/api/monitoring/recompute \
      -H "Authorization: Bearer <your-JWT>" -H "Content-Type: application/json" -d '{}'
    ```
    (or `-d '{"date":"2026-09-03"}'` for a specific day). The response shows the
@@ -87,13 +87,13 @@ Owner/admin. Body (all optional): `{ date?: "YYYY-MM-DD", agent_id?, user_id? }`
 
 ## Tuning knobs (env, all optional)
 
-| Var | Default | |
-|---|---|---|
-| `MONITORING_RECOMPUTE_RUNNER_ENABLED` | `true` | set `false` to disable both the timer and the ingest kick |
-| `MONITORING_DRAIN_INTERVAL_MS` | `30000` | background drain cadence |
-| `MONITORING_RECOMPUTE_DEBOUNCE_MS` | `45000` | ingest → `not_before` delay |
-| `MONITORING_RUNNING_STALE_MS` | `600000` | reclaim orphaned `running` rows after this |
-| `MONITORING_DRAIN_STALL_MS` | `180000` | force-reset a wedged `draining` lock after this |
+| Var                                   | Default  |                                                           |
+| ------------------------------------- | -------- | --------------------------------------------------------- |
+| `MONITORING_RECOMPUTE_RUNNER_ENABLED` | `true`   | set `false` to disable both the timer and the ingest kick |
+| `MONITORING_DRAIN_INTERVAL_MS`        | `30000`  | background drain cadence                                  |
+| `MONITORING_RECOMPUTE_DEBOUNCE_MS`    | `45000`  | ingest → `not_before` delay                               |
+| `MONITORING_RUNNING_STALE_MS`         | `600000` | reclaim orphaned `running` rows after this                |
+| `MONITORING_DRAIN_STALL_MS`           | `180000` | force-reset a wedged `draining` lock after this           |
 
 ## Verification done locally
 

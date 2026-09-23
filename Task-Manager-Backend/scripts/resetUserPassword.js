@@ -9,14 +9,14 @@ async function resetPassword() {
     await sequelize.authenticate();
     console.log("✅ Database connected.");
 
-    const user = await User.findByPk(7);
+    const user = await User.findByPk(21);
 
     if (!user) {
       console.log("❌ User 7 not found.");
       return;
     }
 
-    const newPassword = "Test@12345";
+    const newPassword = "Temp@12345";
     const password_hash = await bcrypt.hash(newPassword, 10);
 
     const identity = await AuthIdentity.findOne({

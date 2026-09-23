@@ -1,6 +1,8 @@
 const crypto = require("crypto");
-const { OrganizationInvitation, User } = require("../models");
+const { OrganizationInvitation, User, Organization } = require("../models");
 const { createActivity } = require("../utils/activity");
+const { sendEmail } = require("../services/email/emailService");
+const { invitationEmail } = require("../services/email/emailTemplates");
 
 // POST /api/invitations
 exports.createInvitation = async (req, res) => {
@@ -9,7 +11,7 @@ exports.createInvitation = async (req, res) => {
 
     const allowedRoles = ["admin", "manager", "member", "client"];
 
-     if (!email || !email.trim()) {
+    if (!email || !email.trim()) {
       return res.status(400).json({
         message: "Email is required.",
       });
@@ -22,6 +24,24 @@ exports.createInvitation = async (req, res) => {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+
+    const inviter = await User.findByPk(req.user.id, {
+      attributes: ["id", "first_name", "last_name", "email"],
+    });
+
+    if (!inviter) {
+      return res.status(401).json({
+        message: "Inviting user not found.",
+      });
+    }
+
+    const organization = await Organization.findByPk(req.user.organization_id);
+
+    if (!organization) {
+      return res.status(404).json({
+        message: "Organization not found.",
+      });
+    }
 
     // Check whether the user already exists
     const existingUser = await User.findOne({
@@ -98,6 +118,29 @@ exports.createInvitation = async (req, res) => {
         role: invitation.role,
       },
     });
+
+    const emailContent = invitationEmail({
+      recipientName: invitation.email.split("@")[0],
+      inviterName:
+        `${inviter.first_name || ""} ${inviter.last_name || ""}`.trim() ||
+        inviter.email,
+      organizationName: organization.name,
+      invitationUrl: response.invitation_link,
+    });
+
+    try {
+      await sendEmail({
+        to: invitation.email,
+        subject: emailContent.subject,
+        text: emailContent.text,
+        html: emailContent.html,
+      });
+    } catch (emailError) {
+      console.error(
+        `Invitation email failed for ${invitation.email}:`,
+        emailError.message,
+      );
+    }
 
     return res.status(201).json(response);
   } catch (error) {
@@ -221,6 +264,24 @@ exports.resendInvitation = async (req, res) => {
       });
     }
 
+    const organization = await Organization.findByPk(req.user.organization_id);
+
+    if (!organization) {
+      return res.status(404).json({
+        message: "Organization not found.",
+      });
+    }
+
+    const inviter = await User.findByPk(req.user.id, {
+      attributes: ["id", "first_name", "last_name", "email"],
+    });
+
+    if (!inviter) {
+      return res.status(401).json({
+        message: "Inviting user not found.",
+      });
+    }
+
     // Generate a new secure token
     const token = crypto.randomBytes(32).toString("hex");
 
@@ -251,6 +312,32 @@ exports.resendInvitation = async (req, res) => {
         role: invitation.role,
       },
     });
+
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const invitationUrl = `${frontendUrl}/accept-invitation?token=${token}`;
+
+    const emailContent = invitationEmail({
+      recipientName: invitation.email.split("@")[0],
+      inviterName:
+        `${inviter.first_name || ""} ${inviter.last_name || ""}`.trim() ||
+        inviter.email,
+      organizationName: organization.name,
+      invitationUrl,
+    });
+
+    try {
+      await sendEmail({
+        to: invitation.email,
+        subject: emailContent.subject,
+        text: emailContent.text,
+        html: emailContent.html,
+      });
+    } catch (emailError) {
+      console.error(
+        `Resend invitation email failed for ${invitation.email}:`,
+        emailError.message,
+      );
+    }
 
     return res.json({
       message: "Invitation resent successfully.",

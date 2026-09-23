@@ -1,7 +1,10 @@
-const { Project, ProjectMember, User, Task, Tag } = require("../models");
+const { Project, ProjectMember, User, Task, Tag, TaskMember } = require("../models");
+const { sequelize } = require("../config/db");
 const { createNotification } = require("../utils/notify");
 const { createActivity } = require("../utils/activity");
 const { getIO } = require("../socket");
+const { sendEmail } = require("../services/email/emailService");
+const { taskCreatedEmail } = require("../services/email/emailTemplates");
 
 async function loadTaskForBoard(taskId) {
   return Task.findOne({
@@ -30,14 +33,8 @@ async function loadTaskForBoard(taskId) {
 // POST /api/projects
 exports.createProject = async (req, res) => {
   try {
-    const {
-      name,
-      description,
-      status,
-      priority,
-      start_date,
-      due_date,
-    } = req.body;
+    const { name, description, status, priority, start_date, due_date } =
+      req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -155,13 +152,7 @@ exports.getProjectMembers = async (req, res) => {
         {
           model: User,
           as: "user",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-            "avatar_url",
-          ],
+          attributes: ["id", "first_name", "last_name", "email", "avatar_url"],
         },
       ],
       order: [["created_at", "ASC"]],
@@ -195,14 +186,8 @@ exports.updateProject = async (req, res) => {
       });
     }
 
-    const {
-      name,
-      description,
-      status,
-      priority,
-      start_date,
-      due_date,
-    } = req.body;
+    const { name, description, status, priority, start_date, due_date } =
+      req.body;
 
     if (name !== undefined) {
       if (!name.trim()) {
@@ -476,7 +461,7 @@ exports.createTask = async (req, res) => {
   try {
     const { projectId } = req.params;
 
-      const {
+    const {
       title,
       description,
       status,
@@ -523,18 +508,43 @@ exports.createTask = async (req, res) => {
       }
     }
 
-    // 4. Create task
-        // 4. Create task
-    const task = await Task.create({
-      organization_id: req.user.organization_id,
-      project_id: projectId,
-      title: title.trim(),
-      description: description || null,
-      status: status || "todo",
-      priority: priority || "medium",
-      assigned_to: assigned_to || null,
-      created_by: req.user.id,
-      due_date: due_date || null,
+    // 4. Create task + automatic task membership (creator, then assignee)
+    // atomically, so a membership failure never leaves a task with no
+    // members behind.
+    const task = await sequelize.transaction(async (transaction) => {
+      const createdTask = await Task.create(
+        {
+          organization_id: req.user.organization_id,
+          project_id: projectId,
+          title: title.trim(),
+          description: description || null,
+          status: status || "todo",
+          priority: priority || "medium",
+          assigned_to: assigned_to || null,
+          created_by: req.user.id,
+          due_date: due_date || null,
+        },
+        { transaction },
+      );
+
+      // Creator always becomes a task member.
+      await TaskMember.findOrCreate({
+        where: { task_id: createdTask.id, user_id: req.user.id },
+        defaults: { added_by: req.user.id },
+        transaction,
+      });
+
+      // If assigned, the assignee becomes a task member too. UNIQUE(task_id,
+      // user_id) + findOrCreate keeps a creator === assignee task at one row.
+      if (assigned_to) {
+        await TaskMember.findOrCreate({
+          where: { task_id: createdTask.id, user_id: assigned_to },
+          defaults: { added_by: req.user.id },
+          transaction,
+        });
+      }
+
+      return createdTask;
     });
 
     // 5. Handle tags
@@ -559,11 +569,20 @@ exports.createTask = async (req, res) => {
     // 6. Reload task with tags
     const full = await Task.findOne({
       where: { id: task.id },
-      include: [{ model: Tag, as: "tags", attributes: ["id", "name"], through: { attributes: [] } }],
+      include: [
+        {
+          model: Tag,
+          as: "tags",
+          attributes: ["id", "name"],
+          through: { attributes: [] },
+        },
+      ],
     });
 
     if (full.assigned_to) {
-      const actor = await User.findByPk(req.user.id, { attributes: ["first_name"] });
+      const actor = await User.findByPk(req.user.id, {
+        attributes: ["first_name"],
+      });
       await createNotification({
         organizationId: req.user.organization_id,
         userId: full.assigned_to,
@@ -573,6 +592,50 @@ exports.createTask = async (req, res) => {
         projectId: projectId,
         message: `${actor?.first_name || "Someone"} assigned you to "${full.title}"`,
       });
+    }
+
+    if (full.assigned_to) {
+      const assignee = await User.findByPk(full.assigned_to, {
+        attributes: ["id", "first_name", "last_name", "email"],
+      });
+
+      const creator = await User.findByPk(req.user.id, {
+        attributes: ["id", "first_name", "last_name", "email"],
+      });
+
+      if (assignee?.email) {
+        const creatorName =
+          `${creator?.first_name || ""} ${creator?.last_name || ""}`.trim() ||
+          creator?.email ||
+          "Someone";
+
+        const recipientName =
+          `${assignee?.first_name || ""} ${assignee?.last_name || ""}`.trim() ||
+          assignee.email;
+
+        const taskUrl = `${process.env.FRONTEND_URL}/projects/${projectId}/tasks/${full.id}`;
+
+        const emailContent = taskCreatedEmail({
+          recipientName,
+          taskTitle: full.title,
+          taskUrl,
+          creatorName,
+        });
+
+        try {
+          await sendEmail({
+            to: assignee.email,
+            subject: emailContent.subject,
+            text: emailContent.text,
+            html: emailContent.html,
+          });
+        } catch (emailError) {
+          console.error(
+            `Task assignment email failed for ${assignee.email}:`,
+            emailError.message,
+          );
+        }
+      }
     }
 
     try {
@@ -639,23 +702,12 @@ exports.getProjectTasks = async (req, res) => {
         {
           model: require("../models").User,
           as: "assignee",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-            "avatar_url",
-          ],
+          attributes: ["id", "first_name", "last_name", "email", "avatar_url"],
         },
-               {
+        {
           model: require("../models").User,
           as: "creator",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-          ],
+          attributes: ["id", "first_name", "last_name", "email"],
         },
         {
           model: Tag,
@@ -709,29 +761,23 @@ exports.getTaskById = async (req, res) => {
         {
           model: require("../models").User,
           as: "assignee",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-            "avatar_url",
-          ],
+          attributes: ["id", "first_name", "last_name", "email", "avatar_url"],
         },
-       {
+        {
           model: require("../models").User,
           as: "creator",
-          attributes: [
-            "id",
-            "first_name",
-            "last_name",
-            "email",
-          ],
+          attributes: ["id", "first_name", "last_name", "email"],
         },
         {
           model: Tag,
           as: "tags",
           attributes: ["id", "name"],
           through: { attributes: [] },
+        },
+        {
+          model: Project,
+          as: "project",
+          attributes: ["id", "name"],
         },
       ],
     });
@@ -817,12 +863,7 @@ exports.updateTask = async (req, res) => {
     // ============================================================
 
     if (!isOwnerOrAdmin && isAssignedMember) {
-      const allowedStatuses = [
-        "todo",
-        "in_progress",
-        "review",
-        "completed",
-      ];
+      const allowedStatuses = ["todo", "in_progress", "review", "completed"];
 
       if (status === undefined) {
         return res.status(400).json({
@@ -852,63 +893,70 @@ exports.updateTask = async (req, res) => {
 
       task.status = status;
 
-          await task.save();
+      await task.save();
 
-    // Handle tags update
-    if (Array.isArray(tags)) {
-      if (tags.length === 0) {
-        await task.setTags([]);
-      } else {
-        const tagRecords = await Promise.all(
-          tags.map((name) =>
-            Tag.findOrCreate({
-              where: {
-                name: name.trim().toLowerCase(),
-                organization_id: req.user.organization_id,
-              },
-              defaults: {
-                name: name.trim().toLowerCase(),
-                organization_id: req.user.organization_id,
-              },
-            }).then(([tag]) => tag),
-          ),
-        );
-        await task.setTags(tagRecords);
+      // Handle tags update
+      if (Array.isArray(tags)) {
+        if (tags.length === 0) {
+          await task.setTags([]);
+        } else {
+          const tagRecords = await Promise.all(
+            tags.map((name) =>
+              Tag.findOrCreate({
+                where: {
+                  name: name.trim().toLowerCase(),
+                  organization_id: req.user.organization_id,
+                },
+                defaults: {
+                  name: name.trim().toLowerCase(),
+                  organization_id: req.user.organization_id,
+                },
+              }).then(([tag]) => tag),
+            ),
+          );
+          await task.setTags(tagRecords);
+        }
       }
-    }
 
-    // Reload with tags
-    const full = await Task.findOne({
-      where: { id: task.id },
-      include: [{ model: Tag, as: "tags", attributes: ["id", "name"], through: { attributes: [] } }],
-    });
+      // Reload with tags
+      const full = await Task.findOne({
+        where: { id: task.id },
+        include: [
+          {
+            model: Tag,
+            as: "tags",
+            attributes: ["id", "name"],
+            through: { attributes: [] },
+          },
+        ],
+      });
 
-    try {
-      const boardTask = await loadTaskForBoard(full.id);
-      getIO().to(`project:${projectId}`).emit("task:updated", boardTask);
-    } catch (err) {
-      console.error("Socket emit failed:", err.message);
-    }
+      try {
+        const boardTask = await loadTaskForBoard(full.id);
+        getIO().to(`project:${projectId}`).emit("task:updated", boardTask);
+      } catch (err) {
+        console.error("Socket emit failed:", err.message);
+      }
 
-    await createActivity({
-      organization_id: req.user.organization_id,
-      project_id: task.project_id,
-      task_id: task.id,
-      user_id: req.user.id,
-      entity_type: "task",
-      entity_id: task.id,
-      action: "updated",
-      description: `Updated task "${task.title}"`,
-      metadata: {
-        task_title: task.title,
+      await createActivity({
+        organization_id: req.user.organization_id,
         project_id: task.project_id,
-      },
-    });
+        task_id: task.id,
+        user_id: req.user.id,
+        entity_type: "task",
+        entity_id: task.id,
+        action: "updated",
+        description: `Updated task "${task.title}"`,
+        metadata: {
+          task_title: task.title,
+          project_id: task.project_id,
+        },
+      });
 
-    return res.json({
-      message: "Task updated successfully.",
-      task: full,
-    });
+      return res.json({
+        message: "Task updated successfully.",
+        task: full,
+      });
     }
 
     // ============================================================
@@ -933,12 +981,7 @@ exports.updateTask = async (req, res) => {
     }
 
     if (status !== undefined) {
-      const allowedStatuses = [
-        "todo",
-        "in_progress",
-        "review",
-        "completed",
-      ];
+      const allowedStatuses = ["todo", "in_progress", "review", "completed"];
 
       if (!allowedStatuses.includes(status)) {
         return res.status(400).json({
@@ -983,12 +1026,28 @@ exports.updateTask = async (req, res) => {
 
     await task.save();
 
+    // New assignee automatically becomes a task member. The previous
+    // assignee's membership is intentionally left untouched -- assignment
+    // and membership are separate concepts (see TaskMember policy).
     if (
       assigned_to !== undefined &&
       task.assigned_to &&
       task.assigned_to !== previousAssignee
     ) {
-      const actor = await User.findByPk(req.user.id, { attributes: ["first_name"] });
+      await TaskMember.findOrCreate({
+        where: { task_id: task.id, user_id: task.assigned_to },
+        defaults: { added_by: req.user.id },
+      });
+    }
+
+    if (
+      assigned_to !== undefined &&
+      task.assigned_to &&
+      task.assigned_to !== previousAssignee
+    ) {
+      const actor = await User.findByPk(req.user.id, {
+        attributes: ["first_name"],
+      });
       await createNotification({
         organizationId: req.user.organization_id,
         userId: task.assigned_to,
@@ -1035,7 +1094,6 @@ exports.updateTask = async (req, res) => {
   }
 };
 
-
 // DELETE /api/projects/:projectId/tasks/:taskId
 exports.deleteTask = async (req, res) => {
   try {
@@ -1077,7 +1135,9 @@ exports.deleteTask = async (req, res) => {
     await task.destroy();
 
     try {
-      getIO().to(`project:${projectId}`).emit("task:deleted", { taskId: deletedTaskId });
+      getIO()
+        .to(`project:${projectId}`)
+        .emit("task:deleted", { taskId: deletedTaskId });
     } catch (err) {
       console.error("Socket emit failed:", err.message);
     }

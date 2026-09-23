@@ -6,6 +6,8 @@ import Dashboard from "./pages/Dashboard.jsx";
 import ProtectedRoute from "./components/ProtectedRoute.jsx";
 import OAuthSuccess from "./pages/OAuthSuccess.jsx";
 import AcceptInvitation from "./pages/auth/AcceptInvitation.jsx";
+import ForgotPassword from "./pages/auth/ForgotPassword.jsx";
+import ResetPassword from "./pages/auth/ResetPassword.jsx";
 import Projects from "./pages/projects/Projects.jsx";
 import CreateProject from "./pages/projects/CreateProject.jsx";
 import ProjectDetails from "./pages/projects/ProjectDetails.jsx";
@@ -22,6 +24,7 @@ import CreateQuestion from "./pages/questions/CreateQuestion.jsx";
 import QuestionDetails from "./pages/questions/QuestionDetails.jsx";
 import Monitoring from "./pages/monitoring/Monitoring.jsx";
 import MonitoringDayDetail from "./pages/monitoring/MonitoringDayDetail.jsx";
+import Chat from "./pages/chat/Chat.jsx";
 
 export default function App() {
   return (
@@ -29,6 +32,8 @@ export default function App() {
       <Route path="/" element={<Home />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/oauth-success" element={<OAuthSuccess />} />
       <Route path="/accept-invitation" element={<AcceptInvitation />} />
       <Route
@@ -116,6 +121,14 @@ export default function App() {
         element={
           <ProtectedRoute>
             <Activity />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/chat"
+        element={
+          <ProtectedRoute>
+            <Chat />
           </ProtectedRoute>
         }
       />

@@ -8,21 +8,31 @@ const {
   googleCallback,
   getMe,
   registerWithInvitation,
+  forgotPassword,
+  resetPassword,
 } = require("../controllers/authController");
 
 router.post("/register", register);
 router.post("/login", login);
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
 router.get("/me", requireAuth, getMe);
 
 router.get(
   "/google",
-  passport.authenticate("google", { scope: ["profile", "email"], session: false })
+  passport.authenticate("google", {
+    scope: ["profile", "email"],
+    session: false,
+  }),
 );
 
 router.get(
   "/google/callback",
-  passport.authenticate("google", { session: false, failureRedirect: "/login" }),
-  googleCallback
+  passport.authenticate("google", {
+    session: false,
+    failureRedirect: "/login",
+  }),
+  googleCallback,
 );
 
 router.post("/register/invitation", registerWithInvitation);

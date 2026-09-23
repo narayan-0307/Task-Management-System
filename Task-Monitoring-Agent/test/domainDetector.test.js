@@ -9,8 +9,40 @@ const {
   registrableDomainFromHost,
   queryAddressBarValues,
   _resetQueryCache,
+  _PS_SCRIPT,
 } = require("../src/monitoring/domainDetector");
 const { classifyTarget } = require("../src/monitoring/contentCapture");
+
+// --- PS_SCRIPT: targeted omnibox lookup + FindAll fallback ordering -----
+// The actual UI Automation call can't be exercised outside Windows/a live
+// browser, so these assert on the embedded selector logic itself: the
+// omnibox AutomationId lookup (FindFirst, short-circuiting) must run BEFORE
+// — and only fall back to — the exhaustive Edit-control scan (FindAll).
+
+test("PS_SCRIPT: looks up the omnibox by AutomationId using FindFirst before the FindAll fallback", () => {
+  const omniboxIdx = _PS_SCRIPT.indexOf("AutomationIdProperty");
+  const findFirstIdx = _PS_SCRIPT.indexOf("FindFirst(");
+  const findAllIdx = _PS_SCRIPT.indexOf("FindAll(");
+
+  assert.ok(_PS_SCRIPT.includes('"omnibox"'), "must query AutomationId \"omnibox\"");
+  assert.ok(findFirstIdx !== -1, "must use FindFirst for the targeted omnibox lookup");
+  assert.ok(findAllIdx !== -1, "must still keep the FindAll fallback");
+  assert.ok(findFirstIdx < findAllIdx, "FindFirst (omnibox) must run before the FindAll fallback");
+  assert.ok(omniboxIdx < findAllIdx, "the omnibox condition must be built before the fallback scan");
+});
+
+test("PS_SCRIPT: FindAll fallback only runs when the omnibox lookup found nothing", () => {
+  assert.ok(
+    /if\s*\(\$vals\.Count\s*-eq\s*0\)/.test(_PS_SCRIPT),
+    "the Edit-control scan must be gated on the omnibox lookup having produced no values",
+  );
+});
+
+test("PS_SCRIPT: still gates on every previously-supported browser process name", () => {
+  for (const b of ["chrome", "msedge", "firefox", "brave", "opera", "vivaldi", "chromium"]) {
+    assert.ok(_PS_SCRIPT.includes(`'${b}'`), `must still match process name "${b}"`);
+  }
+});
 
 // --- normalizeHost: full host, www stripped, junk rejected --------------
 

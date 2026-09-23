@@ -28,6 +28,13 @@
 // The existing monitoring logic (heartbeat.js, tracker.js, ...) is used
 // unchanged. The Agent Secret never leaves the main process / secure store and
 // is never logged, never shown in the tray, never returned to the renderer.
+//
+// Crash diagnostics (Step 2): process-level uncaughtException/unhandledRejection
+// handlers log a safe diagnostic (timestamp, agent_uuid, error name/message/
+// stack — never secrets/tokens/content) and, for an uncaughtException only,
+// terminate the process immediately rather than continue in an unknown state.
+// See the handlers below for the full rationale. No automatic restart is
+// implemented here — that is a separate, later step.
 
 const path = require("path");
 const { app, BrowserWindow, ipcMain, powerMonitor } = require("electron");
@@ -66,10 +73,11 @@ const {
 const consentStore = require("./storage/consentStore");
 const { createTray } = require("./tray");
 const { setAutoStart, isAutoStartEnabled, launchedHidden } = require("./autostart");
+const { formatCrashDiagnostics } = require("./utils/crashDiagnostics");
 const logger = require("./utils/logger");
 
 const DEFAULT_API_BASE_URL =
-  "https://darkviolet-cobra-939760.hostingersite.com/api";
+  "http://localhost:5000/api";
 
 let mainWindow = null;
 let tray = null;
@@ -80,6 +88,82 @@ let connectedAgent = null; // { agent_uuid, status, last_seen_at } from heartbea
 let connectedDeviceName = null;
 let connectedApiBaseUrl = null;
 let isQuitting = false; // true only while Exit Agent is running
+
+// --------------------------------------------------------------- crash diagnostics
+//
+// Step 2 crash audit: no process-level handler previously existed, so an
+// uncaught exception silently killed the whole agent (Electron's default)
+// with no diagnostic record, and an unhandled rejection was silently ignored.
+//
+// formatCrashDiagnostics() (src/utils/crashDiagnostics.js) is Electron-free
+// and only ever emits { timestamp, kind, agent_uuid, error name/message/stack
+// } — never the agent secret, an auth token, an encryption key, captured
+// search/prompt content, or any other config/request object. Neither handler
+// below passes it anything but the error/reason itself and connectedAgent's
+// public agent_uuid.
+
+function currentAgentUuid() {
+    try {
+        return (connectedAgent && connectedAgent.agent_uuid) || null;
+    } catch {
+        return null;
+    }
+}
+
+function logCrashDiagnostics(kind, errorOrReason) {
+    try {
+        for (const line of formatCrashDiagnostics(kind, errorOrReason, currentAgentUuid())) {
+            logger.error(line);
+        }
+    } catch {
+        // The logger/formatter itself must never be able to crash a crash handler.
+        try {
+            logger.error(`FATAL-DIAGNOSTIC (${kind}) — failed to format diagnostics.`);
+        } catch {
+            /* nothing more we can safely do */
+        }
+    }
+}
+
+// An uncaught exception means the synchronous call stack that was running is
+// now in an unknown state — we do NOT know it is safe to continue monitoring,
+// and we deliberately do not try. No further async cleanup is attempted here
+// (no network flush, no IPC, no additional awaits): that work could itself
+// hang or throw again against corrupted state, especially now that Step 1's
+// HTTP timeout means a "safe" flush attempt could still take up to that
+// timeout to fail. app.exit() terminates immediately, bypassing the normal
+// window-close/before-quit flow — the safest existing Electron lifecycle exit
+// for an unknown-state crash. This process will not restart itself; automatic
+// recovery is an explicitly separate, later step.
+process.on("uncaughtException", (err) => {
+    logCrashDiagnostics("uncaughtException", err);
+    logger.error(
+        "Agent state is unknown after an uncaught exception — terminating immediately " +
+            "rather than continuing to monitor in a possibly-corrupted state.",
+    );
+    try {
+        app.exit(1);
+    } catch {
+        process.exit(1);
+    }
+});
+
+// An unhandled rejection is treated as non-fatal, unlike an uncaught
+// exception: the synchronous code that triggered it already unwound
+// normally, so nothing here indicates the process itself is corrupted — only
+// that one promise chain reached here without a .catch(). Every monitoring
+// loop already wraps its own awaits (heartbeat.js's beat().catch(...),
+// tracker.js's tick() try/catch, eventPipeline.js's and
+// contentPipeline.js's flush try/catch), so a rejection that still reaches
+// this global handler is almost always a narrow bug at one call site (e.g. an
+// IPC handler or tray callback), not evidence of systemic failure. Node's own
+// default behaviour for an unhandled rejection with no listener registered is
+// already non-fatal (it logs a warning and the process keeps running) — this
+// handler does not change that effective behaviour, it only replaces the
+// previously silent default with a real, safe diagnostic record.
+process.on("unhandledRejection", (reason) => {
+    logCrashDiagnostics("unhandledRejection", reason);
+});
 
 // --------------------------------------------------------------- window
 
@@ -589,9 +673,15 @@ ipcMain.handle("content:acceptConsent", async (_event, payload) => {
     const documentVersion = String((payload && payload.documentVersion) || "").trim();
     if (!documentVersion) return { ok: false, code: "missing_version" };
 
-    const secure = loadSecureConfig();
-    if (!secure) return { ok: false, code: "not_connected" };
-    const config = buildConfig(secure);
+    // Resolve credentials the same way bootstrap()/startMonitoring() do — env
+    // vars / setup-UI secure storage / agent.config.json — instead of requiring
+    // secure storage specifically. Otherwise an agent configured via
+    // agent.config.json (dev, or a headless install) is "connected" and
+    // heartbeating fine, yet consent can never be recorded.
+    const config = buildConfig(loadSecureConfig() || {});
+    if (!config.apiBaseUrl || !config.agentUuid || !config.agentSecret) {
+        return { ok: false, code: "not_connected" };
+    }
 
     const res = await postConsent(config, { documentVersion, method: "agent" });
     if (res.kind === "mismatch") {

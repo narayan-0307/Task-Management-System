@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { ChevronDown, LogOut } from "lucide-react";
+import { ChevronsUpDown, LogOut } from "lucide-react";
 import { useAuth } from "../../context/AuthContext.jsx";
 import Avatar from "../ui/Avatar.jsx";
 
@@ -24,7 +24,7 @@ export default function UserMenu({ compact = false }) {
           className="flex items-center justify-center rounded-full transition-opacity hover:opacity-80"
           aria-label="Account menu"
         >
-          <Avatar firstName={user?.first_name} lastName={user?.last_name} size="sm" />
+          <Avatar firstName={user?.first_name} lastName={user?.last_name} avatarUrl={user?.avatar_url} size="sm" />
         </button>
 
         {open && (
@@ -54,21 +54,23 @@ export default function UserMenu({ compact = false }) {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-slate-100"
+        className="flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition-colors hover:bg-surface-2"
       >
-        <Avatar firstName={user?.first_name} lastName={user?.last_name} size="sm" />
-        <span className="hidden text-left sm:block">
-          <span className="block text-sm font-medium text-ink">{user?.first_name}</span>
-          <span className="block text-xs capitalize text-slate-500">{user?.role}</span>
+        <Avatar firstName={user?.first_name} lastName={user?.last_name} avatarUrl={user?.avatar_url} size="sm" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-txt-primary">
+            {user?.first_name} {user?.last_name}
+          </span>
+          <span className="block truncate text-xs capitalize text-txt-muted">{user?.role}</span>
         </span>
-        <ChevronDown size={16} className="text-slate-400" />
+        <ChevronsUpDown size={14} className="shrink-0 text-txt-muted" />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-2 w-44 rounded-lg border border-slate-200 bg-white py-1 shadow-lg">
+        <div className="absolute bottom-full left-0 mb-1.5 w-full min-w-[180px] rounded-lg border border-hair bg-surface-2 py-1 shadow-lg">
           <button
             onClick={logout}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-slate-600 hover:bg-slate-50"
+            className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-txt-muted hover:bg-white/5 hover:text-txt-primary"
           >
             <LogOut size={16} />
             Log out

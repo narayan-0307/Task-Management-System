@@ -2,6 +2,7 @@
 // middleware) is the real enforcement layer; these must stay in sync with it
 // but are never a substitute for it.
 export const ORG_ELEVATED = ["owner", "admin", "manager"];
+export const ORG_ELEVATED_ADMIN = ["owner", "admin"]; // org "manager" does NOT qualify
 export const ORG_DELETE_PROJECT = ["owner", "admin"]; // manager cannot delete a project
 export const ORG_MANAGE_TASKS = ["owner", "admin", "manager"];
 export const ORG_CREATE_TASK = ["owner", "admin", "manager", "member"];
@@ -20,6 +21,23 @@ export const canCreateTask = (user) => ORG_CREATE_TASK.includes(user?.role);
 export const canEditTask = (user) => ORG_MANAGE_TASKS.includes(user?.role);
 export const canDeleteTask = (user) => ORG_MANAGE_TASKS.includes(user?.role);
 export const canManageInvitations = (user) => ORG_MANAGE_INVITATIONS.includes(user?.role);
+
+// Task Member management -- mirrors the backend's canManageTaskMembers
+// (utils/taskMemberAccess.js): org owner/admin, the task creator, or a
+// ProjectMember with role "manager" for THIS task's project. Unlike every
+// other helper above, this one keys off a project-scoped ProjectMember.role,
+// not an org role -- org "manager" alone does NOT qualify. This is a
+// UI-visibility gate only; the backend check remains authoritative.
+export const canManageTaskMembers = (user, task, projectMembers = []) => {
+  if (ORG_ELEVATED_ADMIN.includes(user?.role)) return true;
+  if (user?.id != null && task?.creator?.id === user.id) return true;
+
+  const own = (projectMembers || []).find(
+    (member) => user?.id != null && member.user_id === user.id,
+  );
+
+  return own?.role === "manager";
+};
 
 export const canCreateSubtask = (user) => ORG_CREATE_TASK.includes(user?.role);
 export const canDeleteSubtask = (user) => ORG_MANAGE_SUBTASKS.includes(user?.role);

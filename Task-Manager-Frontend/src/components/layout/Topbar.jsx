@@ -1,11 +1,14 @@
-import { Menu, Home, ChevronRight, SlidersHorizontal, Plus } from "lucide-react";
+import { Menu, Home, ChevronRight, Plus } from "lucide-react";
 import { Link } from "react-router-dom";
 import NotificationBell from "./NotificationBell.jsx";
 import ThemeToggle from "../ui/ThemeToggle.jsx";
 
+// Compact context bar. `title` acts as a breadcrumb, not a heading — pages
+// carry their own <PageHeader> for the real title, so this stays muted to
+// avoid rendering the same text twice at two visual weights.
 export default function Topbar({ title, onMenuClick }) {
   return (
-    <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-hair bg-page px-4 py-3 sm:px-6 lg:pl-10">
+    <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-hair bg-page px-4 py-3 sm:px-6 lg:px-8">
       <div className="flex min-w-0 items-center gap-2.5">
         <button
           onClick={onMenuClick}
@@ -14,24 +17,14 @@ export default function Topbar({ title, onMenuClick }) {
         >
           <Menu size={20} />
         </button>
-        <nav className="flex min-w-0 items-center gap-1.5 text-txt-muted">
-          <Home size={15} className="shrink-0" />
+        <nav className="flex min-w-0 items-center gap-1.5 text-txt-muted" aria-label="Breadcrumb">
+          <Home size={14} className="shrink-0" />
           <ChevronRight size={13} className="shrink-0" />
-          <span className="truncate text-sm font-semibold text-txt-primary">
-            {title}
-          </span>
+          <span className="truncate text-sm font-medium text-txt-muted">{title}</span>
         </nav>
       </div>
 
       <div className="flex items-center gap-2">
-        <button
-          type="button"
-          className="hidden items-center gap-1.5 rounded-lg border border-hair px-3 py-1.5 text-xs font-medium text-txt-primary transition-colors hover:bg-surface-2 sm:inline-flex"
-        >
-          <SlidersHorizontal size={14} />
-          Filter
-        </button>
-
         <div className="flex items-center gap-1.5 rounded-lg border border-hair px-2 py-1 text-xs font-medium text-txt-primary">
           <NotificationBell />
           <span className="hidden sm:inline">Alerts</span>

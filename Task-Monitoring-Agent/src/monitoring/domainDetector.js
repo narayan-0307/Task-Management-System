@@ -166,16 +166,36 @@ try {
 } catch { '{}'; exit }
 $root = [System.Windows.Automation.AutomationElement]::FromHandle($h)
 if (-not $root) { '{}'; exit }
-$cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
-$edits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
 $vals = New-Object System.Collections.ArrayList
-foreach ($e in $edits) {
+
+# Chromium browsers expose the address bar with a stable AutomationId
+# ("omnibox"). FindFirst short-circuits on the first match instead of walking
+# the whole page's accessibility tree like FindAll does, so this targeted
+# lookup avoids the timeout FindAll hits on heavy pages.
+$omniboxCond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::AutomationIdProperty, "omnibox")
+$omnibox = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $omniboxCond)
+if ($omnibox) {
   $vp = $null
-  if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+  if ($omnibox.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
     $v = $vp.Current.Value
     if ($v) { [void]$vals.Add([string]$v) }
   }
 }
+
+# Fallback: scan every Edit control (previous behavior) when the targeted
+# omnibox lookup found nothing — non-Chromium browsers (Firefox) or a UI change.
+if ($vals.Count -eq 0) {
+  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+  $edits = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, $cond)
+  foreach ($e in $edits) {
+    $vp = $null
+    if ($e.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$vp)) {
+      $v = $vp.Current.Value
+      if ($v) { [void]$vals.Add([string]$v) }
+    }
+  }
+}
+
 [pscustomobject]@{ values = $vals } | ConvertTo-Json -Compress
 `;
 
@@ -354,4 +374,5 @@ module.exports = {
     registrableDomainFromHost,
     queryAddressBarValues,
     _resetQueryCache,
+    _PS_SCRIPT: PS_SCRIPT, // test seam only — asserts on the embedded selector logic
 };

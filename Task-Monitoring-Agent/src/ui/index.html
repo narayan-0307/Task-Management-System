@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -19,9 +19,17 @@
         --ok: #16a34a;
         --err: #dc2626;
       }
-      * { box-sizing: border-box; margin: 0; padding: 0; }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
       body {
-        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+        font-family:
+          "Segoe UI",
+          system-ui,
+          -apple-system,
+          sans-serif;
         background: linear-gradient(160deg, #1e293b, #0f172a);
         color: var(--ink);
         min-height: 100vh;
@@ -38,9 +46,20 @@
         padding: 30px 28px;
         box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
       }
-      h1 { font-size: 18px; font-weight: 700; letter-spacing: -0.01em; }
-      .subtitle { color: var(--muted); font-size: 13px; margin-top: 5px; line-height: 1.5; }
-      .field { margin-top: 18px; }
+      h1 {
+        font-size: 18px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .subtitle {
+        color: var(--muted);
+        font-size: 13px;
+        margin-top: 5px;
+        line-height: 1.5;
+      }
+      .field {
+        margin-top: 18px;
+      }
       label {
         display: block;
         font-size: 12px;
@@ -57,10 +76,23 @@
         font-family: inherit;
         color: var(--ink);
       }
-      input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15); }
-      .field-hint { color: var(--muted); font-size: 11px; margin-top: 5px; line-height: 1.45; }
-      .secret-row { position: relative; }
-      .secret-row input { padding-right: 58px; }
+      input:focus {
+        outline: none;
+        border-color: var(--primary);
+        box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
+      }
+      .field-hint {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 5px;
+        line-height: 1.45;
+      }
+      .secret-row {
+        position: relative;
+      }
+      .secret-row input {
+        padding-right: 58px;
+      }
       .toggle {
         position: absolute;
         right: 6px;
@@ -73,8 +105,15 @@
         cursor: pointer;
         padding: 4px 6px;
       }
-      .toggle:hover { color: var(--ink); }
-      .field-error { color: var(--err); font-size: 11px; margin-top: 5px; display: none; }
+      .toggle:hover {
+        color: var(--ink);
+      }
+      .field-error {
+        color: var(--err);
+        font-size: 11px;
+        margin-top: 5px;
+        display: none;
+      }
       button.primary {
         margin-top: 22px;
         width: 100%;
@@ -88,8 +127,13 @@
         cursor: pointer;
         transition: background 0.15s ease;
       }
-      button.primary:hover { background: var(--primary-hover); }
-      button.primary:disabled { opacity: 0.6; cursor: not-allowed; }
+      button.primary:hover {
+        background: var(--primary-hover);
+      }
+      button.primary:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
       .message {
         margin-top: 14px;
         font-size: 12px;
@@ -98,9 +142,19 @@
         line-height: 1.5;
         display: none;
       }
-      .message.error { display: block; background: #fef2f2; color: var(--err); }
-      .message.info { display: block; background: #eef2ff; color: var(--primary); }
-      .hidden { display: none !important; }
+      .message.error {
+        display: block;
+        background: #fef2f2;
+        color: var(--err);
+      }
+      .message.info {
+        display: block;
+        background: #eef2ff;
+        color: var(--primary);
+      }
+      .hidden {
+        display: none !important;
+      }
 
       /* connected view */
       .badge {
@@ -114,8 +168,16 @@
         padding: 8px 12px;
         border-radius: 999px;
       }
-      .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); }
-      .status-list { margin-top: 18px; border-top: 1px solid var(--border); }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--ok);
+      }
+      .status-list {
+        margin-top: 18px;
+        border-top: 1px solid var(--border);
+      }
       .status-row {
         display: flex;
         justify-content: space-between;
@@ -124,9 +186,20 @@
         border-bottom: 1px solid var(--border);
         font-size: 13px;
       }
-      .status-row .k { color: var(--muted); }
-      .status-row .v { font-weight: 600; color: var(--ok); }
-      .meta { margin-top: 14px; font-size: 11px; color: var(--muted); word-break: break-all; line-height: 1.5; }
+      .status-row .k {
+        color: var(--muted);
+      }
+      .status-row .v {
+        font-weight: 600;
+        color: var(--ok);
+      }
+      .meta {
+        margin-top: 14px;
+        font-size: 11px;
+        color: var(--muted);
+        word-break: break-all;
+        line-height: 1.5;
+      }
       button.link {
         margin-top: 18px;
         background: transparent;
@@ -138,7 +211,10 @@
         font-weight: 600;
         cursor: pointer;
       }
-      button.link:hover { color: var(--ink); border-color: var(--muted); }
+      button.link:hover {
+        color: var(--ink);
+        border-color: var(--muted);
+      }
     </style>
   </head>
   <body>
@@ -154,8 +230,7 @@
           type="text"
           spellcheck="false"
           autocomplete="off"
-          placeholder="https://darkviolet-cobra-939760.hostingersite.com/api"
-          
+          placeholder="http://localhost:5000/api"
         />
         <p class="field-hint">
           Pre-filled with the production server. Change this only if you are
@@ -166,14 +241,25 @@
 
       <div class="field">
         <label for="agentUuid">Agent UUID</label>
-        <input id="agentUuid" type="text" spellcheck="false" autocomplete="off" placeholder="Paste Agent UUID" />
+        <input
+          id="agentUuid"
+          type="text"
+          spellcheck="false"
+          autocomplete="off"
+          placeholder="Paste Agent UUID"
+        />
         <p class="field-error" id="err-agentUuid"></p>
       </div>
 
       <div class="field">
         <label for="agentSecret">Agent Secret</label>
         <div class="secret-row">
-          <input id="agentSecret" type="password" autocomplete="off" placeholder="Paste Agent Secret" />
+          <input
+            id="agentSecret"
+            type="password"
+            autocomplete="off"
+            placeholder="Paste Agent Secret"
+          />
           <button type="button" class="toggle" id="toggleSecret">SHOW</button>
         </div>
         <p class="field-error" id="err-agentSecret"></p>
@@ -186,23 +272,37 @@
     <!-- ---------- CONNECTED VIEW ---------- -->
     <div class="card hidden" id="connected-view">
       <h1>Task Monitoring Agent</h1>
-      <p class="subtitle" style="margin-bottom: 16px;">Monitoring is active on this computer.</p>
+      <p class="subtitle" style="margin-bottom: 16px">
+        Monitoring is active on this computer.
+      </p>
 
       <span class="badge"><span class="dot"></span> Agent Connected</span>
 
       <div id="device-line" class="meta hidden"></div>
 
       <div class="status-list">
-        <div class="status-row"><span class="k">Status</span><span class="v">● Monitoring is active</span></div>
-        <div class="status-row"><span class="k">Heartbeat</span><span class="v">Connected</span></div>
-        <div class="status-row"><span class="k">Activity Monitoring</span><span class="v">Active</span></div>
-        <div class="status-row"><span class="k">Website Monitoring</span><span class="v">Active</span></div>
-        <div class="status-row"><span class="k">Idle Detection</span><span class="v">Active</span></div>
+        <div class="status-row">
+          <span class="k">Status</span
+          ><span class="v">● Monitoring is active</span>
+        </div>
+        <div class="status-row">
+          <span class="k">Heartbeat</span><span class="v">Connected</span>
+        </div>
+        <div class="status-row">
+          <span class="k">Activity Monitoring</span
+          ><span class="v">Active</span>
+        </div>
+        <div class="status-row">
+          <span class="k">Website Monitoring</span><span class="v">Active</span>
+        </div>
+        <div class="status-row">
+          <span class="k">Idle Detection</span><span class="v">Active</span>
+        </div>
       </div>
 
       <div class="meta" id="agent-meta"></div>
 
-      <p class="subtitle" id="background-hint" style="margin-top: 14px;">
+      <p class="subtitle" id="background-hint" style="margin-top: 14px">
         You can close this window — the monitoring agent keeps running in the
         Windows system tray. Use the tray icon's “Exit Agent” to stop it.
       </p>
@@ -217,11 +317,32 @@
          Decline / close records nothing and no capture occurs. -->
     <div class="card hidden" id="consent-view">
       <h1 id="consent-title">Notice &amp; Consent</h1>
-      <pre id="consent-text" style="white-space:pre-wrap; word-break:break-word; max-height:300px; overflow:auto; font-family:inherit; font-size:12.5px; line-height:1.55; color:var(--ink); background:#f8fafc; border:1px solid var(--border); border-radius:8px; padding:12px; margin:12px 0;"></pre>
-      <p class="field-hint" id="consent-version" style="margin-top:2px;"></p>
-      <div style="display:flex; gap:10px; margin-top:12px;">
-        <button class="primary" id="consentAcceptBtn" style="flex:1;">I Accept</button>
-        <button class="link" id="consentDeclineBtn" style="flex:1;">I Decline</button>
+      <pre
+        id="consent-text"
+        style="
+          white-space: pre-wrap;
+          word-break: break-word;
+          max-height: 300px;
+          overflow: auto;
+          font-family: inherit;
+          font-size: 12.5px;
+          line-height: 1.55;
+          color: var(--ink);
+          background: #f8fafc;
+          border: 1px solid var(--border);
+          border-radius: 8px;
+          padding: 12px;
+          margin: 12px 0;
+        "
+      ></pre>
+      <p class="field-hint" id="consent-version" style="margin-top: 2px"></p>
+      <div style="display: flex; gap: 10px; margin-top: 12px">
+        <button class="primary" id="consentAcceptBtn" style="flex: 1">
+          I Accept
+        </button>
+        <button class="link" id="consentDeclineBtn" style="flex: 1">
+          I Decline
+        </button>
       </div>
       <div class="message" id="consent-message"></div>
     </div>
@@ -232,11 +353,11 @@
       // Default backend for production testing. The real value is supplied by the
       // main process via state.defaultApiBaseUrl; this is only the fallback used
       // if that value is ever missing. The field stays editable for local dev.
-      const DEFAULT_API_BASE_URL = "https://darkviolet-cobra-939760.hostingersite.com/api";
+      const DEFAULT_API_BASE_URL = "http://localhost:5000/api";
 
       const ERROR_TEXT = {
         invalid_url:
-          "Enter a valid API URL, for example https://darkviolet-cobra-939760.hostingersite.com/api",
+          "Enter a valid API URL, for example http://localhost:5000/api",
         missing: "Please fill in every field.",
         auth: "Unable to connect. Please check the Agent UUID and Agent Secret.",
         network:
@@ -244,8 +365,10 @@
         server_error: "Unable to connect. Please try again in a moment.",
         no_secure_storage:
           "Secure credential storage is not available on this computer. Setup cannot continue safely.",
-        save_failed: "Could not save the configuration securely. Please try again.",
-        start_failed: "Connected, but monitoring failed to start. Please try again.",
+        save_failed:
+          "Could not save the configuration securely. Please try again.",
+        start_failed:
+          "Connected, but monitoring failed to start. Please try again.",
       };
 
       function showView(mode) {
@@ -260,7 +383,8 @@
       function showConsent(doc) {
         if (!doc || !doc.documentVersion || !doc.documentText) return;
         pendingConsentVersion = doc.documentVersion;
-        $("consent-title").textContent = doc.documentTitle || "Notice & Consent";
+        $("consent-title").textContent =
+          doc.documentTitle || "Notice & Consent";
         $("consent-text").textContent = doc.documentText;
         $("consent-version").textContent =
           "Consent document version: " + doc.documentVersion;
@@ -314,9 +438,13 @@
           $("device-line").classList.remove("hidden");
         }
         const parts = [];
-        if (state.agent && state.agent.agent_uuid) parts.push("Agent: " + state.agent.agent_uuid);
+        if (state.agent && state.agent.agent_uuid)
+          parts.push("Agent: " + state.agent.agent_uuid);
         if (state.agent && state.agent.last_seen_at)
-          parts.push("Last heartbeat: " + new Date(state.agent.last_seen_at).toLocaleString());
+          parts.push(
+            "Last heartbeat: " +
+              new Date(state.agent.last_seen_at).toLocaleString(),
+          );
         $("agent-meta").textContent = parts.join("  ·  ");
       }
 
@@ -363,13 +491,24 @@
         const agentSecret = $("agentSecret").value;
 
         let hasError = false;
-        if (!apiBaseUrl) { setFieldError("apiBaseUrl", "API URL is required."); hasError = true; }
-        else if (!/^https?:\/\/.+/i.test(apiBaseUrl)) {
-          setFieldError("apiBaseUrl", "API URL must start with http:// or https://");
+        if (!apiBaseUrl) {
+          setFieldError("apiBaseUrl", "API URL is required.");
+          hasError = true;
+        } else if (!/^https?:\/\/.+/i.test(apiBaseUrl)) {
+          setFieldError(
+            "apiBaseUrl",
+            "API URL must start with http:// or https://",
+          );
           hasError = true;
         }
-        if (!agentUuid) { setFieldError("agentUuid", "Agent UUID is required."); hasError = true; }
-        if (!agentSecret) { setFieldError("agentSecret", "Agent Secret is required."); hasError = true; }
+        if (!agentUuid) {
+          setFieldError("agentUuid", "Agent UUID is required.");
+          hasError = true;
+        }
+        if (!agentSecret) {
+          setFieldError("agentSecret", "Agent Secret is required.");
+          hasError = true;
+        }
         if (hasError) return;
 
         setConnecting(true);
@@ -377,7 +516,11 @@
 
         let res;
         try {
-          res = await window.agentSetup.connect({ apiBaseUrl, agentUuid, agentSecret });
+          res = await window.agentSetup.connect({
+            apiBaseUrl,
+            agentUuid,
+            agentSecret,
+          });
         } catch {
           res = { ok: false, code: "server_error" };
         }
@@ -389,7 +532,10 @@
         }
 
         setConnecting(false);
-        setMessage(ERROR_TEXT[res && res.code] || ERROR_TEXT.server_error, "error");
+        setMessage(
+          ERROR_TEXT[res && res.code] || ERROR_TEXT.server_error,
+          "error",
+        );
       });
 
       $("reconfigureBtn").addEventListener("click", async () => {

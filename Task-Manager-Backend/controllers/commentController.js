@@ -1,7 +1,16 @@
-const { Comment, Task, Subtask, Project, User, Attachment } = require("../models");
+const {
+  Comment,
+  Task,
+  Subtask,
+  Project,
+  User,
+  Attachment,
+} = require("../models");
 const { createNotification } = require("../utils/notify");
 const { createActivity } = require("../utils/activity");
 const { getIO } = require("../socket");
+const { sendEmail } = require("../services/email/emailService");
+const { mentionEmail } = require("../services/email/emailTemplates");
 
 async function resolveContext(req) {
   const { projectId, taskId, subtaskId } = req.params;
@@ -9,19 +18,29 @@ async function resolveContext(req) {
   const project = await Project.findOne({
     where: { id: projectId, organization_id: req.user.organization_id },
   });
-  if (!project) return { error: { status: 404, message: "Project not found." } };
+  if (!project)
+    return { error: { status: 404, message: "Project not found." } };
 
   const task = await Task.findOne({
-    where: { id: taskId, project_id: projectId, organization_id: req.user.organization_id },
+    where: {
+      id: taskId,
+      project_id: projectId,
+      organization_id: req.user.organization_id,
+    },
   });
   if (!task) return { error: { status: 404, message: "Task not found." } };
 
   let subtask = null;
   if (subtaskId) {
     subtask = await Subtask.findOne({
-      where: { id: subtaskId, task_id: taskId, organization_id: req.user.organization_id },
+      where: {
+        id: subtaskId,
+        task_id: taskId,
+        organization_id: req.user.organization_id,
+      },
     });
-    if (!subtask) return { error: { status: 404, message: "Subtask not found." } };
+    if (!subtask)
+      return { error: { status: 404, message: "Subtask not found." } };
   }
 
   return { project, task, subtask };
@@ -51,7 +70,11 @@ exports.getComments = async (req, res) => {
     const comments = await Comment.findAll({
       where: subtask
         ? { subtask_id: subtask.id, organization_id: req.user.organization_id }
-        : { task_id: taskId, subtask_id: null, organization_id: req.user.organization_id },
+        : {
+            task_id: taskId,
+            subtask_id: null,
+            organization_id: req.user.organization_id,
+          },
       include: [
         {
           model: User,
@@ -69,7 +92,9 @@ exports.getComments = async (req, res) => {
     return res.json({ comments: comments.map(serializeComment) });
   } catch (error) {
     console.error("Get comments error:", error);
-    return res.status(500).json({ message: "Server error while fetching comments." });
+    return res
+      .status(500)
+      .json({ message: "Server error while fetching comments." });
   }
 };
 
@@ -135,14 +160,19 @@ exports.createComment = async (req, res) => {
       for (const member of activeMembers) {
         const u = member.user;
         if (u && u.id !== req.user.id) {
-          const mentionKey = `@${u.first_name || ""}_${u.last_name || ""}`.trim().replace(/\s+/g, "_").toLowerCase();
+          const mentionKey = `@${u.first_name || ""}_${u.last_name || ""}`
+            .trim()
+            .replace(/\s+/g, "_")
+            .toLowerCase();
           if (contentLower.includes(mentionKey)) {
             mentionedUsers.push(u);
           }
         }
       }
 
-      const actor = await User.findByPk(req.user.id, { attributes: ["first_name"] });
+      const actor = await User.findByPk(req.user.id, {
+        attributes: ["id", "first_name", "last_name", "email"],
+      });
       const subject = subtask ? subtask.title : task.title;
 
       // Notify mentioned users
@@ -156,6 +186,41 @@ exports.createComment = async (req, res) => {
           projectId: projectId,
           message: `${actor?.first_name || "Someone"} mentioned you in a comment on "${subject}"`,
         });
+
+        if (mentionedUser.email) {
+          const mentionedBy =
+            `${actor?.first_name || ""} ${actor?.last_name || ""}`.trim() ||
+            actor?.email ||
+            "Someone";
+
+          const recipientName =
+            `${mentionedUser.first_name || ""} ${mentionedUser.last_name || ""}`.trim() ||
+            mentionedUser.email;
+
+          const taskUrl = `${process.env.FRONTEND_URL}/projects/${projectId}/tasks/${task.id}`;
+
+          const emailContent = mentionEmail({
+            recipientName,
+            mentionedBy,
+            taskTitle: subject,
+            message: content.trim(),
+            taskUrl,
+          });
+
+          try {
+            await sendEmail({
+              to: mentionedUser.email,
+              subject: emailContent.subject,
+              text: emailContent.text,
+              html: emailContent.html,
+            });
+          } catch (emailError) {
+            console.error(
+              `Mention email failed for ${mentionedUser.email}:`,
+              emailError.message,
+            );
+          }
+        }
       }
 
       // Notify assignee if not mentioned
@@ -204,10 +269,14 @@ exports.createComment = async (req, res) => {
       },
     });
 
-    return res.status(201).json({ message: "Comment created.", comment: serialized });
+    return res
+      .status(201)
+      .json({ message: "Comment created.", comment: serialized });
   } catch (error) {
     console.error("Create comment error:", error);
-    return res.status(500).json({ message: "Server error while creating comment." });
+    return res
+      .status(500)
+      .json({ message: "Server error while creating comment." });
   }
 };
 
@@ -219,10 +288,20 @@ exports.deleteComment = async (req, res) => {
 
     const comment = await Comment.findOne({
       where: subtask
-        ? { id: commentId, subtask_id: subtask.id, organization_id: req.user.organization_id }
-        : { id: commentId, task_id: taskId, subtask_id: null, organization_id: req.user.organization_id },
+        ? {
+            id: commentId,
+            subtask_id: subtask.id,
+            organization_id: req.user.organization_id,
+          }
+        : {
+            id: commentId,
+            task_id: taskId,
+            subtask_id: null,
+            organization_id: req.user.organization_id,
+          },
     });
-    if (!comment) return res.status(404).json({ message: "Comment not found." });
+    if (!comment)
+      return res.status(404).json({ message: "Comment not found." });
 
     // Only the author or management can delete
     const canDelete =
@@ -230,7 +309,9 @@ exports.deleteComment = async (req, res) => {
       ["owner", "admin", "manager"].includes(req.user.role);
 
     if (!canDelete) {
-      return res.status(403).json({ message: "You cannot delete this comment." });
+      return res
+        .status(403)
+        .json({ message: "You cannot delete this comment." });
     }
 
     const deletedCommentId = comment.id;
@@ -239,7 +320,12 @@ exports.deleteComment = async (req, res) => {
 
     try {
       const eventName = subtask ? "subtask-comment:deleted" : "comment:deleted";
-      getIO().to(`task:${taskId}`).emit(eventName, { commentId: deletedCommentId, subtaskId: subtask ? subtask.id : undefined });
+      getIO()
+        .to(`task:${taskId}`)
+        .emit(eventName, {
+          commentId: deletedCommentId,
+          subtaskId: subtask ? subtask.id : undefined,
+        });
     } catch (err) {
       console.error("Socket emit failed:", err.message);
     }
@@ -265,6 +351,8 @@ exports.deleteComment = async (req, res) => {
     return res.json({ message: "Comment deleted." });
   } catch (error) {
     console.error("Delete comment error:", error);
-    return res.status(500).json({ message: "Server error while deleting comment." });
+    return res
+      .status(500)
+      .json({ message: "Server error while deleting comment." });
   }
 };

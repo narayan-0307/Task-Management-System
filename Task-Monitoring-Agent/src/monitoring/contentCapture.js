@@ -71,6 +71,52 @@ const SEARCH_CONTROL_TYPES = new Set([
     "ControlType.ComboBox",
 ]);
 
+// The AI-assistant composer is usually a contenteditable div, which UIA
+// reports as ControlType.Document rather than Edit/ComboBox. Only the known
+// prompt hosts get this wider allowance — the generic all-site search path
+// deliberately does NOT (a random page's contenteditable region named
+// "search" is not a query field; see the looksLikeSearchField tests).
+const PROMPT_CONTROL_TYPES = new Set([
+    "ControlType.Edit",
+    "ControlType.ComboBox",
+    "ControlType.Document",
+]);
+
+// Chromium's own internal AutomationId for its address bar — identical
+// across Chrome / Edge / Brave / Opera, since they share the same UI
+// toolkit. This is a structural exclusion (this control IS the browser's
+// own chrome, not a webpage element), not a text blacklist.
+const BROWSER_CHROME_AUTOMATION_IDS = new Set(["omnibox"]);
+
+/** Normalize a UIA string for label-echo comparison. */
+function normalizeLabel(s) {
+    return String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * A UIA "value" read is not always real user text: an empty / placeholder-only
+ * field (and, notably, the browser's own address bar, whose Value can mirror
+ * its accessible Name when nothing meaningful is focused) is often reported
+ * back as text IDENTICAL to the control's own name / automationId /
+ * localizedControlType. That is the control announcing itself, not something
+ * the user typed — reject it regardless of which site it's on. This is the
+ * PRIMARY defense against "Search", "Ask anything", "Address and search bar"
+ * style false positives; it is semantic (compares the reading against the
+ * control's own identity), not a hardcoded blacklist of known-bad strings.
+ */
+function isOwnLabelEcho(fieldMeta) {
+    const text = normalizeLabel(fieldMeta && fieldMeta.text);
+    if (!text) return false;
+    const labels = [
+        fieldMeta && fieldMeta.name,
+        fieldMeta && fieldMeta.automationId,
+        fieldMeta && fieldMeta.localizedControlType,
+    ]
+        .map(normalizeLabel)
+        .filter(Boolean);
+    return labels.some((label) => label === text);
+}
+
 // A tokenised name / automationId / localizedControlType is a search field when
 // it contains an exact "q" / "kw" token, or a token in / adjacent to the
 // search / query / keyword family ("search", "searchbox", "search_query",
@@ -130,14 +176,32 @@ function looksLikeSearchField(meta) {
  *
  * @param {string|null} host                full host, e.g. "gemini.google.com"
  * @param {string|null} registrableDomain   e.g. "google.com"
- * @param {object|null} fieldMeta           readFocusedField() result
+ * @param {object|null} fieldMeta           readFocusedField() result (metadata
+ *   PLUS the current .text reading, since the caller has both)
  * @returns {{kind:"search"|"prompt", label:string}|null}
  */
 function classifyTarget(host, registrableDomain, fieldMeta) {
     if (!host) return null;
 
+    // The browser's own chrome (address bar, etc.) is never page content,
+    // regardless of what its accessible name happens to contain.
+    if (fieldMeta && BROWSER_CHROME_AUTOMATION_IDS.has(String(fieldMeta.automationId || "").toLowerCase())) {
+        return null;
+    }
+
+    // The reading is just the control echoing its own name/placeholder back
+    // (empty field, or the address bar) — never real user content.
+    if (isOwnLabelEcho(fieldMeta)) return null;
+
     const prompt = classifyPromptSite(host, registrableDomain);
-    if (prompt) return prompt;
+    if (prompt) {
+        // Field detection is still required for prompt hosts: without it, ANY
+        // UIA-focused element on e.g. chatgpt.com (a heading, a button, "New
+        // chat") would be captured as if it were the composer.
+        if (!fieldMeta || fieldMeta.isPassword) return null;
+        if (!PROMPT_CONTROL_TYPES.has(fieldMeta.controlType || "")) return null;
+        return prompt;
+    }
 
     if (looksLikeSearchField(fieldMeta)) {
         return { kind: "search", label: host };
@@ -438,6 +502,7 @@ module.exports = {
     PROMPT_REGISTRABLE,
     classifyPromptSite,
     looksLikeSearchField,
+    isOwnLabelEcho,
     classifyTarget,
     looksPrivate,
     reduceQuery,
