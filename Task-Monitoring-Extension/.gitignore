@@ -1,3 +1,11 @@
 dist/
+release/
 node_modules/
 *.zip
+
+# Extension signing key — PRIVATE. Never commit. (The PUBLIC key is the
+# "key" field in manifest.json and is meant to be committed.)
+*.pem
+*.key
+*.p12
+*.pfx

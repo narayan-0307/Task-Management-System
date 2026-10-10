@@ -1,6 +1,9 @@
 <#
-  Removes the HumanCare Connect native messaging host registration for the
-  current user. Run from a normal PowerShell.
+  Removes the per-user (HKCU) DEVELOPER registration created by install.ps1 for
+  the current user. It does NOT touch the production machine-wide (HKLM)
+  registration or <Program Files>\Task Monitoring Agent\native-host\ — those are
+  installed and removed by the Agent installer/uninstaller. Run from a normal
+  PowerShell.
 #>
 
 $ErrorActionPreference = "SilentlyContinue"

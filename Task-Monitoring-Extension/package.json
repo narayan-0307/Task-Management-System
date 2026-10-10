@@ -5,6 +5,7 @@
   "description": "Browser extension sensor for HumanCare Connect search/prompt monitoring.",
   "scripts": {
     "build": "node build.js",
+    "package": "node package-crx.js",
     "test": "node --test \"test/*.test.js\""
   }
 }

@@ -1,135 +1,187 @@
 # Deploying the monitoring extension
 
-The extension only works alongside the desktop Monitoring Agent (it talks to the
-agent over Chrome native messaging). Deploy both together.
+The extension only works alongside the desktop Monitoring Agent: it talks to the
+Agent over Chrome/Edge Native Messaging. They are deployed as a pair, but by
+different mechanisms:
 
-There are three pieces to put in place:
-
-1. **The extension**, force-installed via managed browser policy.
-2. **The native messaging host manifest**, so Chrome/Edge will launch the
-   agent's bridge process for our extension.
-3. **A pinned extension ID**, so the native host manifest's `allowed_origins`
-   and the policy's forcelist both refer to the same extension.
+- **Agent** (and the Native Messaging host): the machine-wide Agent installer.
+- **Extension**: a signed CRX3, intended to be force-installed by managed
+  browser policy (not yet set up — see Deployment status).
 
 ---
 
-## 1. Pin the extension ID
+## Deployment status
 
-Chrome derives the extension ID from a public key in the manifest. Generate one
-once and keep the private key safe (offline).
+**DONE**
 
-```bash
-# generate a key pair (once, keep key.pem private and offline)
-openssl genrsa 2048 | openssl pkcs8 -topk8 -nocrypt -out key.pem
-# the value to paste into manifest.json as "key":
-openssl rsa -in key.pem -pubout -outform DER | base64 -w0
-```
+- Fixed extension ID (`acfadakklgdcfmogimojahhgihenaiii`)
+- Signed CRX3 packaging (`npm run package`)
+- `update.xml` generation
+- Machine-wide Agent installer (per-machine, Program Files)
+- HKLM Native Messaging registration (Chrome and Edge)
+- `NativeMessagingUserLevelHosts` policy (set only if absent)
+- Fixed `allowed_origins`
 
-Add to `manifest.json` (and rebuild):
+**NOT DONE**
 
-```json
-{ "manifest_version": 3, "key": "<the base64 DER public key>", ... }
-```
+- Production HTTPS extension hosting (no real hosting URL exists yet)
+- Managed Chrome `ExtensionInstallForcelist`
+- Managed Edge `ExtensionInstallForcelist`
+- Real managed Windows validation
+- Update/upgrade validation
+- Production deployment runbook
 
-Load `dist/` unpacked once in Chrome → `chrome://extensions` shows the ID. That
-ID is now stable across every machine. Call it `EXT_ID` below.
+What has and has not been verified:
 
-For distribution, publish `dist/` (zipped) to the Chrome Web Store as an
-**unlisted / private** item under the org's developer account, or host the
-`.crt`/update manifest yourself and use `ExtensionInstallForcelist` with the
-update URL. The Web Store route is simplest for Edge too (Edge can install from
-the Chrome Web Store).
-
----
-
-## 2. Force-install policy
-
-### Chrome (Windows, Group Policy / Intune)
-
-Registry (or the equivalent ADMX policy):
-
-```
-HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist
-  1 = "EXT_ID;https://clients2.google.com/service/update2/crx"
-```
-
-### Edge
-
-```
-HKLM\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist
-  1 = "EXT_ID;https://edge.microsoft.com/extensionwebstorebase/v1/crx"
-```
-
-Force-installed extensions cannot be disabled or removed by the user, and
-`nativeMessaging` is granted without a prompt.
-
-Also allow our native host explicitly (some managed configs block native
-messaging by default):
-
-```
-HKLM\SOFTWARE\Policies\Google\Chrome\NativeMessagingAllowlist
-  1 = "co.humancareconnect.monitoring"
-```
+- The extension test suite passes (91/91).
+- A real CRX was generated with a signing key kept outside the repository, and
+  checked locally: CRX3 structure and signature verification only.
+- The CRX has **not** been accepted/installed by Chrome or Edge, and managed
+  force-install has **not** been tested.
 
 ---
 
-## 3. Native messaging host
-
-The agent installer ships a wrapper the manifest points at. On Windows the
-manifest `path` must be an executable; we ship a `.bat` that runs the bridge
-script through the agent's bundled Electron (as plain Node):
-
-`native-host.bat` (installed next to the agent, e.g. `C:\Program Files\HumanCare Monitoring\`):
-
-```bat
-@echo off
-set ELECTRON_RUN_AS_NODE=1
-"%~dp0HumanCareMonitoring.exe" "%~dp0resources\app\src\monitoring\extension\nativeHost.js" %*
-```
-
-Host manifest `co.humancareconnect.monitoring.json` (installed anywhere the
-agent can write, e.g. alongside the agent):
-
-```json
-{
-  "name": "co.humancareconnect.monitoring",
-  "description": "HumanCare Connect monitoring bridge",
-  "path": "C:\\Program Files\\HumanCare Monitoring\\native-host.bat",
-  "type": "stdio",
-  "allowed_origins": ["chrome-extension://EXT_ID/"]
-}
-```
-
-Register it (per-user; the agent installer can do this, or a login script):
+## Architecture
 
 ```
-HKCU\Software\Google\Chrome\NativeMessagingHosts\co.humancareconnect.monitoring
-  (Default) = "C:\Program Files\HumanCare Monitoring\co.humancareconnect.monitoring.json"
-
-HKCU\Software\Microsoft\Edge\NativeMessagingHosts\co.humancareconnect.monitoring
-  (Default) = "C:\Program Files\HumanCare Monitoring\co.humancareconnect.monitoring.json"
+Managed browser
+    ↓
+force-installed extension
+    ↓
+Chrome/Edge Native Messaging
+    ↓
+HKLM native host registration
+    ↓
+Agent nativeHost.js
+    ↓
+Agent bridge
+    ↓
+local named pipe
+    ↓
+Monitoring Agent
+    ↓
+backend
 ```
 
----
+(The "force-installed" step is the intended production path; the policy that
+does it is not implemented yet.)
 
-## How it runs
+How it runs:
 
-- Agent starts → `bridgeServer.start()` opens the pipe
+- The Agent starts → `bridgeServer.start()` opens the pipe
   `\\.\pipe\co.humancareconnect.monitoring` and writes a token to
   `%USERPROFILE%\.humancare-monitoring\ext-bridge.json` (0600).
-- Chrome/Edge starts → force-installs the extension → its background worker
-  calls `connectNative("co.humancareconnect.monitoring")` → Chrome runs
-  `native-host.bat` → `nativeHost.js` reads the token file and connects to the
-  pipe.
-- The heartbeat says `content_capture.active === true` → the agent calls
-  `extensionBridge.setState({enabled:true, blocklist})` → the bridge pushes
-  that to the extension → it starts forwarding search/prompt commits.
+- The browser loads the extension → its background worker calls
+  `connectNative("co.humancareconnect.monitoring")` → the browser runs the host
+  registered under HKLM → `native-host.bat` → `nativeHost.js`, which reads the
+  token file and connects to the pipe.
+- The heartbeat says `content_capture.active === true` → the Agent calls
+  `extensionBridge.setState({enabled:true, blocklist})` → the bridge pushes that
+  to the extension → it starts forwarding search/prompt commits.
 - Everything downstream (consent version check, blocklist re-check, encryption,
-  retention, audit) is exactly the same as the agent's own UIA capture path.
+  retention, audit) is the same as the Agent's own UIA capture path.
 
-## Single machine (testing, from source)
+---
 
-No key, no store, no policy needed:
+## 1. Fixed extension ID
+
+The extension ID is derived from the public `key` in `manifest.json`, so it is
+the same on every machine, in Chrome and Edge, from any folder:
+
+**`acfadakklgdcfmogimojahhgihenaiii`**
+
+- The `key` is a **public** key and is committed.
+- The matching **private** key is **not** in this repository and must never be
+  committed (`*.pem`, `*.key`, `*.p12`, `*.pfx` are git-ignored, and
+  `test/manifest.test.js` fails if a key file or private-key block appears
+  here). It is needed only to sign the CRX; it is not needed to build, load or
+  compute the ID. Keep it in the organisation's secrets store with a backup.
+- **Do not regenerate the key.** A new key means a new ID, which breaks the
+  Native Messaging `allowed_origins` entry (baked into the Agent installer) and
+  any policy naming the old ID. `test/manifest.test.js` pins the ID.
+
+---
+
+## 2. Packaging the extension (signed CRX3 + update.xml)
+
+```powershell
+npm run build
+$env:HC_EXTENSION_KEY = "<path to the PEM signing key, OUTSIDE this repo>"
+$env:HC_EXTENSION_UPDATE_BASE_URL = "https://<real-host>"   # must be https
+npm run package
+```
+
+- `HC_EXTENSION_KEY` is the only way the key is supplied. The script refuses a
+  key inside the repository and never prints, copies or logs it.
+- Output is `release/humancare-monitoring-<version>.crx` and `release/update.xml`
+  (git-ignored). The version comes from `dist/manifest.json`; bump
+  `manifest.json` for every release or browsers will not update.
+- The script fails unless the CRX's extension ID is exactly
+  `acfadakklgdcfmogimojahhgihenaiii`, the signature verifies, and the key matches
+  `manifest.json`'s `key`. It also fails if `HC_EXTENSION_UPDATE_BASE_URL` is
+  missing.
+- Packaging does not publish anything. No production hosting exists yet; the
+  `.crx` and `update.xml` must be served over HTTPS from the URL given in
+  `HC_EXTENSION_UPDATE_BASE_URL` once a host is chosen.
+
+---
+
+## 3. Agent installer and Native Messaging host (production)
+
+The Agent installer (electron-builder NSIS, `perMachine: true`, runs elevated,
+installs under Program Files) does all of the following. Employees do nothing
+by hand.
+
+- Registers the machine-wide scheduled task `HumanCare Connect Monitoring Agent`
+  (runs the Agent at logon for any user, least privilege).
+- Creates the Native Messaging host under the Agent installation directory
+  (`<INSTDIR>\native-host\`, not user-writable):
+  - `native-host.bat` — runs `nativeHost.js` from `resources\app.asar` through
+    the Agent executable with `ELECTRON_RUN_AS_NODE=1`.
+  - `co.humancareconnect.monitoring.json` — the host manifest, with exactly one
+    allowed origin: `chrome-extension://acfadakklgdcfmogimojahhgihenaiii/`
+- Registers the host under **HKLM** for both browsers (no HKCU keys):
+
+  ```
+  HKLM\SOFTWARE\Google\Chrome\NativeMessagingHosts\co.humancareconnect.monitoring
+  HKLM\SOFTWARE\Microsoft\Edge\NativeMessagingHosts\co.humancareconnect.monitoring
+    (Default) = "<INSTDIR>\native-host\co.humancareconnect.monitoring.json"
+  ```
+
+- Sets, **only when the value does not already exist**, so per-user hosts cannot
+  shadow the machine-wide one:
+
+  ```
+  HKLM\SOFTWARE\Policies\Google\Chrome\NativeMessagingUserLevelHosts   = REG_DWORD 0
+  HKLM\SOFTWARE\Policies\Microsoft\Edge\NativeMessagingUserLevelHosts  = REG_DWORD 0
+  ```
+
+  Pre-existing organisation policy values are preserved. The installer records
+  only the values it created (marker files in `<INSTDIR>\native-host\`), and the
+  uninstaller removes only those, plus the two host keys and the host files.
+
+Production deployment must **not** tell employees to load the extension
+unpacked, run `install.ps1`, type extension IDs, or create HKCU Native
+Messaging registrations.
+
+---
+
+## 4. Extension force-install (NOT IMPLEMENTED)
+
+`ExtensionInstallForcelist` for Chrome and Edge has **not** been implemented or
+tested, and there is no production hosting URL to point it at. When it is built,
+it will reference extension ID `acfadakklgdcfmogimojahhgihenaiii` and the
+HTTPS `update.xml` URL from §2. Until then, the extension is not installed on
+managed machines by anything in this repository.
+
+---
+
+## Local development / testing (single machine, from source)
+
+> **Development only. This is not the production deployment mechanism.**
+> `native-host/install.ps1` is a local-user helper; do not use it for employees.
+
+No key, hosting or policy needed:
 
 ```powershell
 # 1. build the extension
@@ -137,11 +189,13 @@ cd Task-Monitoring-Extension
 npm install; npm run build          # -> dist\
 
 # 2. load dist\ unpacked in Chrome (chrome://extensions, Developer mode,
-#    Load unpacked) and in Edge (edge://extensions). Copy each shown ID.
+#    Load unpacked) and in Edge (edge://extensions). The ID is fixed (see §1):
+#    both browsers should show acfadakklgdcfmogimojahhgihenaiii — nothing to copy.
 
-# 3. register the native messaging host for this user
+# 3. register the native messaging host for this user (Chrome AND Edge, HKCU,
+#    no admin, no parameters)
 cd native-host
-.\install.ps1 -ChromeId <chrome-id> -EdgeId <edge-id>
+.\install.ps1
 
 # 4. restart Chrome AND Edge completely (close every window)
 
@@ -150,13 +204,24 @@ cd ..\..\Task-Monitoring-Agent
 npm install; npm start
 ```
 
-`.\uninstall.ps1` removes the registration.
+`install.ps1` takes no `-ChromeId` / `-EdgeId` (passing them is an error). It
+writes one `allowed_origins` entry,
+`chrome-extension://acfadakklgdcfmogimojahhgihenaiii/`, and registers the same
+host for both browsers under `HKCU\Software\Google\Chrome\NativeMessagingHosts\`
+and `HKCU\Software\Microsoft\Edge\NativeMessagingHosts\`, with files in
+`%LOCALAPPDATA%\HumanCareMonitoring\`. `.\uninstall.ps1` removes the
+registration.
+
+On a machine that also has the production Agent installed, the HKLM policy
+`NativeMessagingUserLevelHosts = 0` makes browsers ignore these HKCU
+registrations, so this helper will not work there.
 
 ---
 
 ## Verifying on one machine
 
-1. Agent running, extension force-installed, heartbeat shows capture active.
+1. Agent running, extension installed (unpacked for dev), heartbeat shows
+   capture active.
 2. `chrome://extensions` → the extension has no errors; its service worker is
    "active".
 3. Do a search on any site → within one flush interval it appears in the

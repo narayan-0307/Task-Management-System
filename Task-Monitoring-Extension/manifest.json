@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "HumanCare Connect — Monitoring",
   "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtD55r6SjF5c2R9j07KjhqUl20okB9NHtMAzKsWXaM0MGPLnclXlv92PrgG4/nCxjbSZIKsw13sDqqmU2CGtXRMaIqGrss8SuN++9b3ByALXMJ1bMbcNXwBz2hOiB18NUjkzNFjTHmGr8is2B7kPosiJk2fpC+z6MgZWw35epbfruFME2JyDVK4NFytO++ZyYfRTEcW+JwZCXsHQONdMAxujo6McE4uTskpBj7TX6hXoKUHJECz5pdDOXxs2BocK2FWa6E7mIRYMm9sR5370YGEPzU0r1iCN4DHERrQDV6+t4wb48zh9BnAGzqqP/O4FQhgNaeU0qow8DHVrjK4mIawIDAQAB",
   "description": "Records search queries and AI-assistant prompts for workplace monitoring, per your organization's disclosed policy. Reads only search/prompt fields — no other page content.",
   "minimum_chrome_version": "102",
   "permissions": ["nativeMessaging", "tabs"],
