@@ -3,8 +3,8 @@
 // Resolution order (first match wins per field):
 //   1. Environment variables
 //        AGENT_API_BASE_URL
-//        AGENT_UUID
-//        AGENT_SECRET
+//        AGENT_UUID     (development/headless only — ignored when packaged)
+//        AGENT_SECRET   (development/headless only — ignored when packaged)
 //        HEARTBEAT_INTERVAL_SECONDS
 //        ACTIVITY_POLL_INTERVAL_SECONDS
 //        ACTIVITY_BUFFER_MAX_SIZE
@@ -15,7 +15,9 @@
 //      a completed UI setup wins over a stale agent.config.json, but still
 //      below environment variables so CI / developer overrides keep working.
 //   3. A local JSON file (default: <agent root>/agent.config.json,
-//      or the path in AGENT_CONFIG_PATH)
+//      or the path in AGENT_CONFIG_PATH) — DEVELOPMENT ONLY. Ignored entirely
+//      when running as a packaged Electron app (app.isPackaged), and excluded
+//      from the electron-builder package.
 //
 // The real agent_secret must only ever live in the local file, the environment,
 // or the OS-encrypted Electron store — never in committed source.
@@ -81,182 +83,359 @@ const DEFAULT_LIVE_SCREEN_CONNECT_TIMEOUT_SECONDS = 45;
 const DEFAULT_SCREENSHOT_POLL_INTERVAL_SECONDS = 5;
 
 function positiveNumberOr(value, fallback) {
-    const n = Number(value);
-    return Number.isFinite(n) && n > 0 ? n : fallback;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
 function booleanOr(value, fallback) {
-    if (value === undefined || value === null || value === "") return fallback;
-    if (typeof value === "boolean") return value;
-    const s = String(value).trim().toLowerCase();
-    if (["1", "true", "yes", "on"].includes(s)) return true;
-    if (["0", "false", "no", "off"].includes(s)) return false;
-    return fallback;
+  if (value === undefined || value === null || value === "") return fallback;
+  if (typeof value === "boolean") return value;
+  const s = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(s)) return true;
+  if (["0", "false", "no", "off"].includes(s)) return false;
+  return fallback;
 }
 
-function loadFileConfig() {
-    const configPath =      
-        process.env.AGENT_CONFIG_PATH ||
-        path.join(__dirname, "..", "..", "agent.config.json");
-
-    if (!fs.existsSync(configPath)) {
-        return {};
-    }
-
-    try {
-        const raw = fs.readFileSync(configPath, "utf8");
-        return JSON.parse(raw);
-    } catch (err) {
-        throw new Error(`Unable to read agent config file at ${configPath}: ${err.message}`);
-    }
+// True only inside a packaged (installed) Electron app. Under plain Node (the
+// headless `npm run agent` / tests) require("electron") returns the binary
+// path string, not the API, so this is false; under `electron .` in
+// development app.isPackaged is false.
+function isPackagedApp() {
+  try {
+    // eslint-disable-next-line global-require
+    const electron = require("electron");
+    return Boolean(
+      electron &&
+      typeof electron === "object" &&
+      electron.app &&
+      electron.app.isPackaged === true,
+    );
+  } catch {
+    return false;
+  }
 }
 
-function buildConfig(fallback = {}) {
-    const fileConfig = loadFileConfig();
-    const fb = fallback || {};
+// Production backend (Hostinger). The default API URL an INSTALLED agent offers
+// in its setup screen. A public address, not a credential — the agent UUID and
+// secret still come only from enrollment (secure store). Development keeps its
+// own localhost default (main.js DEFAULT_API_BASE_URL).
+const PRODUCTION_API_BASE_URL =
+  "https://darkviolet-cobra-939760.hostingersite.com/api";
 
-    // env var  >  fallback (Electron setup UI)  >  agent.config.json
-    const layered = (envKey, key) =>
-        process.env[envKey] || fb[key] || fileConfig[key] || "";
+// API URL policy — the single source of truth for which backend URLs the agent
+// may talk to. Trims and drops trailing slashes (existing normalization).
+//   development: http: or https:  (http://localhost:5000/api keeps working)
+//   packaged:    https: ONLY — credentials and monitoring data must never travel
+//                over plain HTTP. An http: URL is rejected, never upgraded.
+// Returns { url, error } where error is null | "invalid_url" | "insecure_url".
+function checkApiUrl(value, options = {}) {
+  const packaged =
+    typeof options.isPackaged === "boolean"
+      ? options.isPackaged
+      : isPackagedApp();
+  const trimmed = String(value || "")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!trimmed) return { url: null, error: "invalid_url" };
 
-    const apiBaseUrl = layered("AGENT_API_BASE_URL", "apiBaseUrl");
-    const agentUuid = layered("AGENT_UUID", "agentUuid");
-    const agentSecret = layered("AGENT_SECRET", "agentSecret");
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { url: null, error: "invalid_url" };
+  }
+  if (parsed.protocol === "https:") return { url: trimmed, error: null };
+  if (parsed.protocol === "http:") {
+    return packaged
+      ? { url: null, error: "insecure_url" }
+      : { url: trimmed, error: null };
+  }
+  return { url: null, error: "invalid_url" };
+}
 
-    // --- Phase 5 cutover: what the agent actually sends ---
-    //   "events" (default) -> raw event pipeline only. Legacy POST /agent/activities
-    //                         is NOT written to.
-    //   "dual"             -> both, for a supervised transition window.
-    //   "legacy"           -> only POST /agent/activities (the revert path).
-    // EVENTS_PIPELINE_ENABLED=false is honoured as a hard override that forces
-    // legacy-only, so a stale config that only knows that flag still works.
-    const rawMode = String(
-        layered("PIPELINE_MODE", "pipelineMode") || "events",
-    ).trim().toLowerCase();
-    let pipelineMode = ["events", "dual", "legacy"].includes(rawMode) ? rawMode : "events";
+// Convenience wrapper: the normalized URL, or null when it is not allowed.
+function normalizeApiUrl(value, options = {}) {
+  return checkApiUrl(value, options).url;
+}
 
-    const eventsFlagRaw =
-        process.env.EVENTS_PIPELINE_ENABLED !== undefined
-            ? process.env.EVENTS_PIPELINE_ENABLED
-            : fb.eventsPipelineEnabled !== undefined
-                ? fb.eventsPipelineEnabled
-                : fileConfig.eventsPipelineEnabled;
-    const eventsFlag = booleanOr(eventsFlagRaw, true);
-    if (eventsFlagRaw !== undefined && eventsFlag === false) {
-        pipelineMode = "legacy"; // hard override
+// agent.config.json is a DEVELOPMENT-only credential source. A packaged app
+// never reads it — not from the app bundle, not via AGENT_CONFIG_PATH — so an
+// installer can never ship (or silently pick up) a reusable agent identity.
+// Packaged installs get credentials only from the setup/enrollment flow
+// (Electron secure store, passed in as `fallback`).
+function loadFileConfig(packaged) {
+  if (packaged) {
+    return {};
+  }
+
+  const configPath =
+    process.env.AGENT_CONFIG_PATH ||
+    path.join(__dirname, "..", "..", "agent.config.json");
+
+  if (!fs.existsSync(configPath)) {
+    return {};
+  }
+
+  try {
+    const raw = fs.readFileSync(configPath, "utf8");
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `Unable to read agent config file at ${configPath}: ${err.message}`,
+    );
+  }
+}
+
+// options.isPackaged overrides the app.isPackaged detection (tests only).
+function buildConfig(fallback = {}, options = {}) {
+  const packaged =
+    typeof options.isPackaged === "boolean"
+      ? options.isPackaged
+      : isPackagedApp();
+
+  const fileConfig = loadFileConfig(packaged);
+  const fb = fallback || {};
+
+  // env var > fallback (Electron setup UI) > agent.config.json
+  const layered = (envKey, key) =>
+    process.env[envKey] || fb[key] || fileConfig[key] || "";
+
+  // ------------------------------------------------------------
+  // API URL
+  // ------------------------------------------------------------
+  //
+  // Development:
+  //   Keep the existing configurable behavior.
+  //
+  // Packaged/installed:
+  //   ALWAYS use the production backend.
+  //
+  // This prevents an employee from changing the monitoring server
+  // using:
+  //   - AGENT_API_BASE_URL
+  //   - saved/fallback configuration
+  //   - agent.config.json
+  //
+  let apiBaseUrl;
+  let apiBaseUrlError = null;
+
+  if (packaged) {
+    // Installed agent is permanently pinned to the production backend.
+    apiBaseUrl = PRODUCTION_API_BASE_URL;
+  } else {
+    // Development/headless behavior remains unchanged.
+    apiBaseUrl = layered("AGENT_API_BASE_URL", "apiBaseUrl");
+
+    if (apiBaseUrl) {
+      const checked = checkApiUrl(apiBaseUrl, {
+        isPackaged: false,
+      });
+
+      apiBaseUrl = checked.url || "";
+      apiBaseUrlError = checked.error;
     }
+  }
 
-    const eventsPipelineEnabled = pipelineMode !== "legacy";
-    // Never leave the agent blind: if events are off, legacy stays on regardless
-    // of mode.
-    const legacyActivitiesEnabled =
-        !eventsPipelineEnabled || pipelineMode === "legacy" || pipelineMode === "dual";
+  // ------------------------------------------------------------
+  // Credentials
+  // ------------------------------------------------------------
+  //
+  // Packaged:
+  //   Credentials ONLY come from the secure enrollment flow.
+  //
+  // Development:
+  //   AGENT_UUID / AGENT_SECRET environment variables continue
+  //   to work as before.
+  //
+  const credential = (envKey, key) =>
+    packaged ? fb[key] || "" : layered(envKey, key);
 
-    return {
-        pipelineMode,
-        apiBaseUrl: apiBaseUrl.replace(/\/+$/, ""),
-        agentUuid,
-        agentSecret,
-        heartbeatIntervalSeconds: positiveNumberOr(
-            layered("HEARTBEAT_INTERVAL_SECONDS", "heartbeatIntervalSeconds"),
-            DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-        ),
-        activityPollIntervalSeconds: positiveNumberOr(
-            layered("ACTIVITY_POLL_INTERVAL_SECONDS", "activityPollIntervalSeconds"),
-            DEFAULT_ACTIVITY_POLL_INTERVAL_SECONDS,
-        ),
-        activityBufferMaxSize: positiveNumberOr(
-            layered("ACTIVITY_BUFFER_MAX_SIZE", "activityBufferMaxSize"),
-            DEFAULT_ACTIVITY_BUFFER_MAX_SIZE,
-        ),
-        idleThresholdSeconds: positiveNumberOr(
-            layered("IDLE_THRESHOLD_SECONDS", "idleThresholdSeconds"),
-            DEFAULT_IDLE_THRESHOLD_SECONDS,
-        ),
+  const agentUuid = credential("AGENT_UUID", "agentUuid");
+  const agentSecret = credential("AGENT_SECRET", "agentSecret");
 
-        // --- events pipeline (Phase 1); gated by pipelineMode (Phase 5) ---
-        eventsPipelineEnabled,
-        legacyActivitiesEnabled,
-        eventFlushIntervalSeconds: positiveNumberOr(
-            layered("EVENT_FLUSH_INTERVAL_SECONDS", "eventFlushIntervalSeconds"),
-            DEFAULT_EVENT_FLUSH_INTERVAL_SECONDS,
-        ),
-        eventBatchMaxSize: positiveNumberOr(
-            layered("EVENT_BATCH_MAX_SIZE", "eventBatchMaxSize"),
-            DEFAULT_EVENT_BATCH_MAX_SIZE,
-        ),
-        eventQueueMaxEvents: positiveNumberOr(
-            layered("EVENT_QUEUE_MAX_EVENTS", "eventQueueMaxEvents"),
-            DEFAULT_EVENT_QUEUE_MAX_EVENTS,
-        ),
-        inputPollIntervalSeconds: positiveNumberOr(
-            layered("INPUT_POLL_INTERVAL_SECONDS", "inputPollIntervalSeconds"),
-            DEFAULT_INPUT_POLL_INTERVAL_SECONDS,
-        ),
+  // --- Phase 5 cutover: what the agent actually sends ---
+  //   "events" (default) -> raw event pipeline only. Legacy POST /agent/activities
+  //                         is NOT written to.
+  //   "dual"             -> both, for a supervised transition window.
+  //   "legacy"           -> only POST /agent/activities (the revert path).
+  // EVENTS_PIPELINE_ENABLED=false is honoured as a hard override that forces
+  // legacy-only, so a stale config that only knows that flag still works.
+  const rawMode = String(layered("PIPELINE_MODE", "pipelineMode") || "events")
+    .trim()
+    .toLowerCase();
 
-        // --- §5b content capture (Phase 4) — cadence only; activation is
-        //     driven entirely by the server heartbeat signal ---
-        contentPollIntervalSeconds: positiveNumberOr(
-            layered("CONTENT_POLL_INTERVAL_SECONDS", "contentPollIntervalSeconds"),
-            DEFAULT_CONTENT_POLL_INTERVAL_SECONDS,
-        ),
-        contentFlushIntervalSeconds: positiveNumberOr(
-            layered("CONTENT_FLUSH_INTERVAL_SECONDS", "contentFlushIntervalSeconds"),
-            DEFAULT_CONTENT_FLUSH_INTERVAL_SECONDS,
-        ),
+  let pipelineMode = ["events", "dual", "legacy"].includes(rawMode)
+    ? rawMode
+    : "events";
 
-        // --- Live Screen (gated; activation is driven by the heartbeat) ---
-        liveScreenIdlePollIntervalSeconds: positiveNumberOr(
-            layered("LIVE_SCREEN_IDLE_POLL_INTERVAL_SECONDS", "liveScreenIdlePollIntervalSeconds"),
-            DEFAULT_LIVE_SCREEN_IDLE_POLL_INTERVAL_SECONDS,
-        ),
-        liveScreenPollIntervalSeconds: positiveNumberOr(
-            layered("LIVE_SCREEN_POLL_INTERVAL_SECONDS", "liveScreenPollIntervalSeconds"),
-            DEFAULT_LIVE_SCREEN_POLL_INTERVAL_SECONDS,
-        ),
-        liveScreenMaxSessionSeconds: positiveNumberOr(
-            layered("LIVE_SCREEN_MAX_SESSION_SECONDS", "liveScreenMaxSessionSeconds"),
-            DEFAULT_LIVE_SCREEN_MAX_SESSION_SECONDS,
-        ),
-        liveScreenConnectTimeoutSeconds: positiveNumberOr(
-            layered("LIVE_SCREEN_CONNECT_TIMEOUT_SECONDS", "liveScreenConnectTimeoutSeconds"),
-            DEFAULT_LIVE_SCREEN_CONNECT_TIMEOUT_SECONDS,
-        ),
+  const eventsFlagRaw =
+    process.env.EVENTS_PIPELINE_ENABLED !== undefined
+      ? process.env.EVENTS_PIPELINE_ENABLED
+      : fb.eventsPipelineEnabled !== undefined
+        ? fb.eventsPipelineEnabled
+        : fileConfig.eventsPipelineEnabled;
 
-        // --- Screenshot (gated; separate feature from Live Screen) ---
-        screenshotPollIntervalSeconds: positiveNumberOr(
-            layered("SCREENSHOT_POLL_INTERVAL_SECONDS", "screenshotPollIntervalSeconds"),
-            DEFAULT_SCREENSHOT_POLL_INTERVAL_SECONDS,
-        ),
-    };
+  const eventsFlag = booleanOr(eventsFlagRaw, true);
+
+  if (eventsFlagRaw !== undefined && eventsFlag === false) {
+    pipelineMode = "legacy";
+  }
+
+  const eventsPipelineEnabled = pipelineMode !== "legacy";
+
+  // Never leave the agent blind: if events are off, legacy stays on regardless
+  // of mode.
+  const legacyActivitiesEnabled =
+    !eventsPipelineEnabled ||
+    pipelineMode === "legacy" ||
+    pipelineMode === "dual";
+
+  return {
+    pipelineMode,
+
+    // Packaged builds are already pinned to the production URL.
+    // Development URLs are normalized as before.
+    apiBaseUrl: apiBaseUrl.replace(/\/+$/, ""),
+
+    // null, or "insecure_url" / "invalid_url" in development when
+    // the configured URL is rejected.
+    apiBaseUrlError,
+
+    agentUuid,
+    agentSecret,
+
+    heartbeatIntervalSeconds: positiveNumberOr(
+      layered("HEARTBEAT_INTERVAL_SECONDS", "heartbeatIntervalSeconds"),
+      DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+    ),
+
+    activityPollIntervalSeconds: positiveNumberOr(
+      layered("ACTIVITY_POLL_INTERVAL_SECONDS", "activityPollIntervalSeconds"),
+      DEFAULT_ACTIVITY_POLL_INTERVAL_SECONDS,
+    ),
+
+    activityBufferMaxSize: positiveNumberOr(
+      layered("ACTIVITY_BUFFER_MAX_SIZE", "activityBufferMaxSize"),
+      DEFAULT_ACTIVITY_BUFFER_MAX_SIZE,
+    ),
+
+    idleThresholdSeconds: positiveNumberOr(
+      layered("IDLE_THRESHOLD_SECONDS", "idleThresholdSeconds"),
+      DEFAULT_IDLE_THRESHOLD_SECONDS,
+    ),
+
+    // --- events pipeline (Phase 1); gated by pipelineMode (Phase 5) ---
+    eventsPipelineEnabled,
+    legacyActivitiesEnabled,
+
+    eventFlushIntervalSeconds: positiveNumberOr(
+      layered("EVENT_FLUSH_INTERVAL_SECONDS", "eventFlushIntervalSeconds"),
+      DEFAULT_EVENT_FLUSH_INTERVAL_SECONDS,
+    ),
+
+    eventBatchMaxSize: positiveNumberOr(
+      layered("EVENT_BATCH_MAX_SIZE", "eventBatchMaxSize"),
+      DEFAULT_EVENT_BATCH_MAX_SIZE,
+    ),
+
+    eventQueueMaxEvents: positiveNumberOr(
+      layered("EVENT_QUEUE_MAX_EVENTS", "eventQueueMaxEvents"),
+      DEFAULT_EVENT_QUEUE_MAX_EVENTS,
+    ),
+
+    inputPollIntervalSeconds: positiveNumberOr(
+      layered("INPUT_POLL_INTERVAL_SECONDS", "inputPollIntervalSeconds"),
+      DEFAULT_INPUT_POLL_INTERVAL_SECONDS,
+    ),
+
+    // --- §5b content capture (Phase 4) ---
+    contentPollIntervalSeconds: positiveNumberOr(
+      layered("CONTENT_POLL_INTERVAL_SECONDS", "contentPollIntervalSeconds"),
+      DEFAULT_CONTENT_POLL_INTERVAL_SECONDS,
+    ),
+
+    contentFlushIntervalSeconds: positiveNumberOr(
+      layered("CONTENT_FLUSH_INTERVAL_SECONDS", "contentFlushIntervalSeconds"),
+      DEFAULT_CONTENT_FLUSH_INTERVAL_SECONDS,
+    ),
+
+    // --- Live Screen ---
+    liveScreenIdlePollIntervalSeconds: positiveNumberOr(
+      layered(
+        "LIVE_SCREEN_IDLE_POLL_INTERVAL_SECONDS",
+        "liveScreenIdlePollIntervalSeconds",
+      ),
+      DEFAULT_LIVE_SCREEN_IDLE_POLL_INTERVAL_SECONDS,
+    ),
+
+    liveScreenPollIntervalSeconds: positiveNumberOr(
+      layered(
+        "LIVE_SCREEN_POLL_INTERVAL_SECONDS",
+        "liveScreenPollIntervalSeconds",
+      ),
+      DEFAULT_LIVE_SCREEN_POLL_INTERVAL_SECONDS,
+    ),
+
+    liveScreenMaxSessionSeconds: positiveNumberOr(
+      layered("LIVE_SCREEN_MAX_SESSION_SECONDS", "liveScreenMaxSessionSeconds"),
+      DEFAULT_LIVE_SCREEN_MAX_SESSION_SECONDS,
+    ),
+
+    liveScreenConnectTimeoutSeconds: positiveNumberOr(
+      layered(
+        "LIVE_SCREEN_CONNECT_TIMEOUT_SECONDS",
+        "liveScreenConnectTimeoutSeconds",
+      ),
+      DEFAULT_LIVE_SCREEN_CONNECT_TIMEOUT_SECONDS,
+    ),
+
+    // --- Screenshot ---
+    screenshotPollIntervalSeconds: positiveNumberOr(
+      layered(
+        "SCREENSHOT_POLL_INTERVAL_SECONDS",
+        "screenshotPollIntervalSeconds",
+      ),
+      DEFAULT_SCREENSHOT_POLL_INTERVAL_SECONDS,
+    ),
+  };
 }
 
 function validateConfig(config) {
-    const missing = [];
-    if (!config.apiBaseUrl) missing.push("apiBaseUrl");
-    if (!config.agentUuid) missing.push("agentUuid");
-    if (!config.agentSecret) missing.push("agentSecret");
+  if (config.apiBaseUrlError === "insecure_url") {
+    throw new Error(
+      "The configured API URL is not HTTPS. The installed agent only connects " +
+        "to an https:// monitoring server.",
+    );
+  }
+  const missing = [];
+  if (!config.apiBaseUrl) missing.push("apiBaseUrl");
+  if (!config.agentUuid) missing.push("agentUuid");
+  if (!config.agentSecret) missing.push("agentSecret");
 
-    if (missing.length > 0) {
-        throw new Error(
-            `Missing required agent configuration: ${missing.join(", ")}. ` +
-            `Copy agent.config.example.json to agent.config.json and fill it in.`,
-        );
-    }
+  if (missing.length > 0) {
+    throw new Error(
+      `Missing required agent configuration: ${missing.join(", ")}. ` +
+        `Copy agent.config.example.json to agent.config.json and fill it in.`,
+    );
+  }
 }
 
 module.exports = {
-    buildConfig,
-    validateConfig,
-    booleanOr,
-    DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
-    DEFAULT_ACTIVITY_POLL_INTERVAL_SECONDS,
-    DEFAULT_ACTIVITY_BUFFER_MAX_SIZE,
-    DEFAULT_IDLE_THRESHOLD_SECONDS,
-    DEFAULT_EVENT_FLUSH_INTERVAL_SECONDS,
-    DEFAULT_EVENT_BATCH_MAX_SIZE,
-    DEFAULT_EVENT_QUEUE_MAX_EVENTS,
-    DEFAULT_INPUT_POLL_INTERVAL_SECONDS,
-    DEFAULT_CONTENT_POLL_INTERVAL_SECONDS,
-    DEFAULT_CONTENT_FLUSH_INTERVAL_SECONDS,
+  buildConfig,
+  validateConfig,
+  isPackagedApp,
+  checkApiUrl,
+  normalizeApiUrl,
+  PRODUCTION_API_BASE_URL,
+  booleanOr,
+  DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+  DEFAULT_ACTIVITY_POLL_INTERVAL_SECONDS,
+  DEFAULT_ACTIVITY_BUFFER_MAX_SIZE,
+  DEFAULT_IDLE_THRESHOLD_SECONDS,
+  DEFAULT_EVENT_FLUSH_INTERVAL_SECONDS,
+  DEFAULT_EVENT_BATCH_MAX_SIZE,
+  DEFAULT_EVENT_QUEUE_MAX_EVENTS,
+  DEFAULT_INPUT_POLL_INTERVAL_SECONDS,
+  DEFAULT_CONTENT_POLL_INTERVAL_SECONDS,
+  DEFAULT_CONTENT_FLUSH_INTERVAL_SECONDS,
 };

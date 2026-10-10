@@ -2,11 +2,15 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const path = require("path");
 
 const autostart = require("../src/autostart");
 const { setAutoStart, isAutoStartEnabled, launchedHidden, HIDDEN_FLAG, TASK_NAME } = autostart;
-const { buildTaskXml, currentUserId, RESTART_COUNT, RESTART_INTERVAL_MINUTES, setRunSchtasks, resetRunSchtasks } =
-  autostart.__test;
+const { setRunSchtasks, resetRunSchtasks } = autostart.__test;
+
+const nsh = fs.readFileSync(path.join(__dirname, "..", "build", "installer.nsh"), "utf8");
+const mainSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
 
 function withMockSchtasks(impl, fn) {
   setRunSchtasks(impl);
@@ -16,6 +20,8 @@ function withMockSchtasks(impl, fn) {
     resetRunSchtasks();
   }
 }
+
+// ------------------------------------------------------- runtime (unchanged)
 
 test("launchedHidden() reflects the --hidden argv flag", () => {
   assert.equal(HIDDEN_FLAG, "--hidden");
@@ -34,124 +40,144 @@ test("TASK_NAME is a stable, human-identifiable name (not random)", () => {
   assert.equal(TASK_NAME, "HumanCare Connect Monitoring Agent");
 });
 
-test("buildTaskXml embeds the given executable path verbatim as the task Command (no hardcoded path)", () => {
-  const exePath = "C:\\Users\\Test User\\AppData\\Local\\Programs\\Task Monitoring Agent\\Task Monitoring Agent.exe";
-  const xml = buildTaskXml(exePath);
-  assert.match(xml, /<Command>C:\\Users\\Test User\\AppData\\Local\\Programs\\Task Monitoring Agent\\Task Monitoring Agent\.exe<\/Command>/);
-  assert.match(xml, /<Arguments>--hidden<\/Arguments>/);
-});
-
-test("buildTaskXml never places a secret/token-shaped value on the command line — it only ever receives an exe path", () => {
-  // The function's only input is the exe path; nothing in this codebase ever
-  // passes it a config/credentials object, but assert here that the XML
-  // structure has exactly one Exec/Command/Arguments and nothing else that
-  // could carry extra data.
-  const xml = buildTaskXml("C:\\Program Files\\Agent\\Agent.exe");
-  const execMatches = xml.match(/<Exec>/g) || [];
-  assert.equal(execMatches.length, 1);
-  assert.match(xml, /<Arguments>--hidden<\/Arguments>/);
-});
-
-test("buildTaskXml XML-escapes special characters in the executable path", () => {
-  const xml = buildTaskXml('C:\\Path With & Ampersand\\Agent.exe');
-  assert.match(xml, /<Command>C:\\Path With &amp; Ampersand\\Agent\.exe<\/Command>/);
-  assert.equal(xml.includes("With & Ampersand"), false);
-});
-
-test("buildTaskXml configures a per-user logon trigger, least-privilege run level, and bounded restart-on-failure", () => {
-  const xml = buildTaskXml("C:\\Agent\\Agent.exe");
-  assert.match(xml, /<LogonTrigger>/);
-  assert.match(xml, /<RunLevel>LeastPrivilege<\/RunLevel>/);
-  assert.match(xml, /<LogonType>InteractiveToken<\/LogonType>/); // no stored password needed
-  assert.match(xml, /<RestartOnFailure>/);
-  assert.match(xml, new RegExp(`<Count>${RESTART_COUNT}</Count>`));
-  assert.match(xml, new RegExp(`<Interval>PT${RESTART_INTERVAL_MINUTES}M</Interval>`));
-  // Bounded, not unbounded: Count must be a small finite number.
-  assert.ok(RESTART_COUNT > 0 && RESTART_COUNT <= 10);
-});
-
-test("currentUserId() returns a non-empty DOMAIN\\user-shaped identifier", () => {
-  const id = currentUserId();
-  assert.match(id, /^.+\\.+$/);
-});
-
-test("setAutoStart(true) invokes schtasks /Create with /TN <TASK_NAME> and /XML, then cleans up the temp file", () => {
-  let seenArgs = null;
-  const result = withMockSchtasks(
-    (args) => {
-      if (args[0] === "/Create") seenArgs = args;
-      return "";
-    },
-    () => setAutoStart(true),
-  );
-  // On non-Windows CI this branch returns false immediately (platform check)
-  // — only assert schtasks was invoked when we're actually on win32.
-  if (process.platform === "win32") {
-    assert.equal(result, true);
-    assert.ok(seenArgs, "expected schtasks /Create to be called");
-    assert.equal(seenArgs[0], "/Create");
-    assert.equal(seenArgs[1], "/TN");
-    assert.equal(seenArgs[2], TASK_NAME);
-    assert.equal(seenArgs[3], "/XML");
-    assert.ok(seenArgs[4]); // a temp file path
-    assert.equal(seenArgs[5], "/F");
-  }
-});
-
-test("setAutoStart(false) invokes schtasks /Delete /TN <TASK_NAME> /F", () => {
-  let seenArgs = null;
-  const result = withMockSchtasks(
-    (args) => {
-      seenArgs = args;
-      return "";
-    },
-    () => setAutoStart(false),
-  );
-  if (process.platform === "win32") {
-    assert.equal(result, true);
-    assert.deepEqual(seenArgs, ["/Delete", "/TN", TASK_NAME, "/F"]);
-  }
-});
-
-test("setAutoStart(false) does not throw when the task does not exist (schtasks exits non-zero)", () => {
-  const result = withMockSchtasks(
-    () => {
-      throw new Error("ERROR: The system cannot find the file specified.");
-    },
-    () => setAutoStart(false),
-  );
-  // Absence of the task is not a failure from the caller's point of view.
-  assert.equal(result, true);
-});
-
-test("setAutoStart(true) returns false (not throw) when schtasks fails to register the task", () => {
-  const result = withMockSchtasks(
-    () => {
-      throw new Error("Access is denied.");
-    },
-    () => setAutoStart(true),
-  );
-  if (process.platform === "win32") {
-    assert.equal(result, false);
-  }
-});
-
 test("isAutoStartEnabled() reflects whether schtasks /Query succeeds", () => {
-  const whenPresent = withMockSchtasks(
-    () => "TaskName: HumanCare Connect Monitoring Agent\nStatus: Ready",
-    () => isAutoStartEnabled(),
-  );
+  const whenPresent = withMockSchtasks(() => "Status: Ready", () => isAutoStartEnabled());
   const whenAbsent = withMockSchtasks(
     () => {
       throw new Error("ERROR: The system cannot find the file specified.");
     },
     () => isAutoStartEnabled(),
   );
-  if (process.platform === "win32") {
-    assert.equal(whenPresent, true);
-    assert.equal(whenAbsent, false);
-  } else {
-    assert.equal(whenPresent, false);
-    assert.equal(whenAbsent, false);
+  assert.equal(whenPresent, process.platform === "win32");
+  assert.equal(whenAbsent, false);
+});
+
+// ------------------------------------------- runtime no longer owns the task
+
+test("setAutoStart(true/false) never creates, changes or deletes the task (only /Query)", () => {
+  for (const enabled of [true, false]) {
+    const calls = [];
+    withMockSchtasks(
+      (args) => {
+        calls.push(args[0]);
+        return "";
+      },
+      () => setAutoStart(enabled),
+    );
+    assert.ok(!calls.includes("/Create"), "must not /Create");
+    assert.ok(!calls.includes("/Delete"), "must not /Delete");
+    assert.ok(!calls.includes("/Change"), "must not /Change");
   }
+});
+
+test("setAutoStart does not throw when the task is absent or schtasks fails", () => {
+  assert.doesNotThrow(() =>
+    withMockSchtasks(
+      () => {
+        throw new Error("Access is denied.");
+      },
+      () => setAutoStart(true),
+    ),
+  );
+});
+
+test("enrollment (agent:connect) still calls setAutoStart(true) and does not require task creation to succeed", () => {
+  assert.match(mainSrc, /saveSecureConfig\(\{ apiBaseUrl, agentUuid, agentSecret \}\);[\s\S]*?setAutoStart\(true\);/);
+  assert.doesNotMatch(mainSrc, /if\s*\(\s*!?\s*setAutoStart/);
+});
+
+test("autostart.js no longer contains task-creation code", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "src", "autostart.js"), "utf8");
+  assert.doesNotMatch(src, /"\/Create"|"\/Delete"|buildTaskXml/);
+});
+
+// ---------------------------------------------------- installer-time task
+
+test("installer.nsh registers the machine-wide task at install time (customInstall)", () => {
+  assert.match(nsh, /!macro customInstall/);
+  assert.match(nsh, /Register-ScheduledTask -TaskName 'HumanCare Connect Monitoring Agent'/);
+  assert.ok(nsh.includes(TASK_NAME));
+});
+
+test("task principal is the Users group, not an employee account", () => {
+  assert.match(nsh, /<GroupId>S-1-5-32-545<\/GroupId>/);
+  assert.doesNotMatch(nsh, /<UserId>/);
+  assert.doesNotMatch(nsh, /USERNAME|USERDOMAIN|USERPROFILE/i);
+});
+
+test("task runs in the interactive session at logon, least privilege, no stored password", () => {
+  assert.match(nsh, /<LogonTrigger><Enabled>true<\/Enabled><\/LogonTrigger>/);
+  assert.match(nsh, /<RunLevel>LeastPrivilege<\/RunLevel>/);
+  assert.doesNotMatch(nsh, /<Password>|<LogonType>Password|S4U|ServiceAccount|SYSTEM/i);
+  assert.doesNotMatch(nsh, /\/RU|\/RP/);
+});
+
+test("task launches the installed exe with only --hidden and has bounded restart", () => {
+  assert.match(nsh, /<Command>\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}<\/Command><Arguments>--hidden<\/Arguments>/);
+  assert.match(nsh, /<RestartOnFailure><Interval>PT1M<\/Interval><Count>3<\/Count><\/RestartOnFailure>/);
+  assert.equal((nsh.match(/<Exec>/g) || []).length, 1);
+  const actionsLine = nsh.split("\n").find((l) => l.includes("<Actions"));
+  assert.doesNotMatch(actionsLine, /secret|uuid|password|token/i);
+});
+
+test("task is not a Windows Service", () => {
+  assert.doesNotMatch(nsh, /sc\.exe|nssm|CreateService|SERVICE_/i);
+});
+
+test("uninstall removes the machine-wide task (by exact name only)", () => {
+  assert.match(nsh, /!macro customUnInstall/);
+  assert.match(nsh, /schtasks\.exe \/Delete \/TN "HumanCare Connect Monitoring Agent" \/F/);
+  assert.doesNotMatch(nsh, /\/TN\s+"\*"|\\\*/);
+});
+
+test("installer does not touch credentials/userData", () => {
+  assert.doesNotMatch(nsh, /agent-credentials|RMDir[^\n]*APPDATA/i);
+});
+
+// ------------------------------------------- NSIS XML generation / hooks
+
+function generatedTaskXml() {
+  const lines = nsh.split(/\r?\n/).filter((l) => /^\s*FileWrite \$0 '/.test(l));
+  return lines
+    .map((l) => l.match(/FileWrite \$0 '(.*)'\s*$/)[1].replace(/\$\\r\$\\n$/, ""))
+    .join("\n")
+    .replace("$INSTDIR\\${APP_EXECUTABLE_FILENAME}", "C:\\Program Files\\Task Monitoring Agent\\Task Monitoring Agent.exe");
+}
+
+test("generated task XML is ASCII, well-formed, and has no encoding declaration that could mismatch the ANSI file NSIS writes", () => {
+  const xml = generatedTaskXml();
+  assert.match(xml, /^<Task version="1\.2"/);
+  assert.doesNotMatch(xml, /<\?xml/); // FileWrite is ANSI; UTF-8 is rejected and UTF-16 would be a lie
+  assert.ok(/^[\x00-\x7f]*$/.test(xml), "XML must be pure ASCII");
+  assert.doesNotMatch(xml, /\$/, "no unexpanded NSIS variables may remain except the substituted ones");
+  const stack = [];
+  for (const m of xml.matchAll(/<(\/?)([A-Za-z]+)([^>]*?)(\/?)>/g)) {
+    if (m[4]) continue;
+    if (m[1]) assert.equal(stack.pop(), m[2], `unbalanced </${m[2]}>`);
+    else stack.push(m[2]);
+  }
+  assert.equal(stack.length, 0);
+});
+
+test("generated task XML: Users group principal, no LogonType/UserId, logon trigger, single exec", () => {
+  const xml = generatedTaskXml();
+  assert.match(xml, /<GroupId>S-1-5-32-545<\/GroupId>/);
+  assert.doesNotMatch(xml, /<UserId>|<LogonType>/);
+  assert.equal((xml.match(/<LogonTrigger>/g) || []).length, 1);
+  assert.equal((xml.match(/<Exec>/g) || []).length, 1);
+  assert.match(xml, /<Command>C:\\Program Files\\Task Monitoring Agent\\Task Monitoring Agent\.exe<\/Command>/);
+});
+
+test("installer.nsh uses valid electron-builder hooks and the registration is written to a plugins-dir temp file and removed", () => {
+  assert.match(nsh, /!macro customInstall[\s\S]*!macroend/);
+  assert.match(nsh, /!macro customUnInstall[\s\S]*!macroend/);
+  assert.match(nsh, /InitPluginsDir/);
+  assert.match(nsh, /\$PLUGINSDIR\\hcc-agent-task\.xml/);
+  assert.match(nsh, /Delete "\$PLUGINSDIR\\hcc-agent-task\.xml"/);
+});
+
+test("APP_EXECUTABLE_FILENAME is the electron-builder NSIS define (productName + .exe)", () => {
+  const common = path.join(__dirname, "..", "node_modules", "app-builder-lib", "templates", "nsis", "common.nsh");
+  if (!fs.existsSync(common)) return; // electron-builder not installed
+  assert.match(fs.readFileSync(common, "utf8"), /!define APP_EXECUTABLE_FILENAME "\$\{PRODUCT_FILENAME\}\.exe"/);
 });

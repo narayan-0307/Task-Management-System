@@ -4,11 +4,37 @@
 // It never logs request bodies or headers — callers get back only
 // { status, data } and are responsible for logging safely.
 
+const { isPackagedApp } = require("../config/config");
+
 class NetworkError extends Error {
     constructor(message) {
         super(message);
         this.name = "NetworkError";
     }
+}
+
+// Raised BEFORE any connection is opened when a packaged agent is asked to
+// send to a non-https: URL. Every agent request goes through postJson, so this
+// is the last line of defense behind config.checkApiUrl: nothing (credentials,
+// events, content, screenshots) can leave a packaged agent over plain HTTP.
+// It extends NetworkError so every existing caller treats it as "couldn't
+// send" and keeps its data queued — nothing is dropped and nothing is sent.
+class InsecureUrlError extends NetworkError {
+    constructor() {
+        super("Refusing to send over plain HTTP: the installed agent requires an https:// API URL.");
+        this.name = "InsecureUrlError";
+    }
+}
+
+function assertTransportAllowed(url) {
+    if (!isPackagedApp()) return;
+    let protocol = null;
+    try {
+        protocol = new URL(url).protocol;
+    } catch {
+        protocol = null;
+    }
+    if (protocol !== "https:") throw new InsecureUrlError();
 }
 
 // A hung TCP/backend connection must never leave a request pending forever —
@@ -28,6 +54,7 @@ function resolveTimeoutMs(timeoutMs) {
 }
 
 async function postJson(url, body, timeoutMs) {
+    assertTransportAllowed(url);
     const timeout = resolveTimeoutMs(timeoutMs);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
@@ -63,4 +90,4 @@ async function postJson(url, body, timeoutMs) {
     return { status: response.status, data };
 }
 
-module.exports = { postJson, NetworkError, DEFAULT_TIMEOUT_MS };
+module.exports = { postJson, NetworkError, InsecureUrlError, DEFAULT_TIMEOUT_MS };

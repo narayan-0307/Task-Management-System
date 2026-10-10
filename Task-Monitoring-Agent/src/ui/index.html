@@ -232,7 +232,7 @@
           autocomplete="off"
           placeholder="http://localhost:5000/api"
         />
-        <p class="field-hint">
+        <p class="field-hint" id="hint-apiBaseUrl">
           Pre-filled with the production server. Change this only if you are
           running the backend locally for development.
         </p>
@@ -358,6 +358,8 @@
       const ERROR_TEXT = {
         invalid_url:
           "Enter a valid API URL, for example http://localhost:5000/api",
+        insecure_url:
+          "The API URL must start with https:// — this agent does not connect over plain HTTP.",
         missing: "Please fill in every field.",
         auth: "Unable to connect. Please check the Agent UUID and Agent Secret.",
         network:
@@ -398,7 +400,20 @@
         window.agentSetup.onConsentRequired((data) => showConsent(data));
       }
 
+      // Installed (packaged) agent: HTTPS only, and never pre-fill the http:
+      // development default. The main process enforces this too.
+      let requireHttps = false;
+
       function prefillApiUrl(state) {
+        requireHttps = Boolean(state && state.requireHttps);
+        if (requireHttps) {
+          $("apiBaseUrl").value = (state && state.defaultApiBaseUrl) || "";
+          $("apiBaseUrl").placeholder = "https://";
+          $("hint-apiBaseUrl").textContent =
+            "Pre-filled with the production server. Change this only if your administrator gives you a different https:// address.";
+          ERROR_TEXT.invalid_url = "Enter a valid https:// API URL.";
+          return;
+        }
         $("apiBaseUrl").value =
           (state && state.defaultApiBaseUrl) || DEFAULT_API_BASE_URL;
       }
@@ -493,6 +508,9 @@
         let hasError = false;
         if (!apiBaseUrl) {
           setFieldError("apiBaseUrl", "API URL is required.");
+          hasError = true;
+        } else if (requireHttps && !/^https:\/\/.+/i.test(apiBaseUrl)) {
+          setFieldError("apiBaseUrl", ERROR_TEXT.insecure_url);
           hasError = true;
         } else if (!/^https?:\/\/.+/i.test(apiBaseUrl)) {
           setFieldError(

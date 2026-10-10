@@ -23,8 +23,8 @@
     },
     "files": [
       "src/**/*",
-      "agent.config.json",
-      "package.json"
+      "package.json",
+      "!**/agent.config*.json"
     ],
     "win": {
       "target": "nsis",
@@ -32,9 +32,11 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": true,
       "include": "build/installer.nsh"
     }
   }

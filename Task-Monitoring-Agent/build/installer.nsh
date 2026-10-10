@@ -1,22 +1,123 @@
-; Step 3 reliability hardening — uninstall-time cleanup only.
+; Machine-wide Scheduled Task for the Monitoring Agent.
 ;
-; The "HumanCare Connect Monitoring Agent" Scheduled Task (per-user logon
-; trigger + bounded crash-restart) is registered at RUNTIME by the Agent
-; itself, only after a successful enrollment (see src/autostart.js). It is
-; deliberately NOT created here at install time, so a fresh install never
-; gets an auto-starting/relaunching task before the employee has entered
-; enrollment credentials.
+; The installer is per-machine (package.json build.nsis.perMachine) and so runs
+; elevated. It registers the "HumanCare Connect Monitoring Agent" task here, so
+; the task is owned by the administrator account and a standard employee cannot
+; modify, disable or delete it. At runtime the Agent only QUERIES the task
+; (src/autostart.js); it never creates or deletes it.
 ;
-; It IS removed here at uninstall time, because the running Agent may not
-; get a chance to remove it itself (e.g. an uninstall run without first using
-; "Exit Agent" / reconfigure). Deleting a task that doesn't exist just fails
-; harmlessly — always safe to run unconditionally.
+; Task design:
+;   - Principal: built-in Users group (S-1-5-32-545), LogonType InteractiveToken,
+;     RunLevel LeastPrivilege -> runs as whichever employee logs on, inside
+;     that employee's own interactive session (tray/UI/Live Screen), with no
+;     stored password and no elevation. NOT a Windows Service.
+;   - Trigger: LogonTrigger with no UserId -> any user's logon.
+;   - Action: "<INSTDIR>\<exe>" --hidden (no secrets on the command line).
+;   - Restart on failure: 3 times, 1 minute apart (bounded).
+;   - Re-registering with -Force replaces any older per-user task of the same name.
 ;
-; No admin privileges are required: this is the same per-user task the Agent
-; itself creates (RunLevel LeastPrivilege), so a per-user schtasks /Delete
-; needs none either.
+; Uninstall removes the task. It does not touch any user's credentials/userData.
+
+!macro customInstall
+  DetailPrint "Registering machine-wide scheduled task: HumanCare Connect Monitoring Agent..."
+  InitPluginsDir
+  FileOpen $0 "$PLUGINSDIR\hcc-agent-task.xml" w
+  ; No XML declaration: NSIS FileWrite emits ANSI/ASCII (not UTF-16), and the
+  ; XML is handed to Register-ScheduledTask as an in-memory string. A declared
+  ; encoding that does not match the bytes is wrong, and "UTF-8" is rejected
+  ; by Task Scheduler ("task XML is malformed") when given as a string.
+  FileWrite $0 '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">$\r$\n'
+  FileWrite $0 '<RegistrationInfo><Description>Launches the HumanCare Connect Monitoring Agent at logon in the employee session and restarts it after a crash (bounded retries). Installed by the Agent installer.</Description></RegistrationInfo>$\r$\n'
+  FileWrite $0 '<Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>$\r$\n'
+  FileWrite $0 '<Principals><Principal id="Author"><GroupId>S-1-5-32-545</GroupId><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>$\r$\n'
+  FileWrite $0 '<Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><Enabled>true</Enabled><Hidden>false</Hidden><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure></Settings>$\r$\n'
+  FileWrite $0 '<Actions Context="Author"><Exec><Command>$INSTDIR\${APP_EXECUTABLE_FILENAME}</Command><Arguments>--hidden</Arguments></Exec></Actions>$\r$\n'
+  FileWrite $0 '</Task>$\r$\n'
+  FileClose $0
+  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Register-ScheduledTask -TaskName 'HumanCare Connect Monitoring Agent' -Xml (Get-Content -Raw -LiteralPath '$PLUGINSDIR\hcc-agent-task.xml') -Force | Out-Null"`
+  Pop $1
+  Delete "$PLUGINSDIR\hcc-agent-task.xml"
+  ${If} $1 != 0
+    DetailPrint "Warning: scheduled task registration returned $1."
+  ${EndIf}
+
+  ; ---- Machine-wide Chrome/Edge Native Messaging host (production) ----------
+  ; Files live under the Program Files install dir, so a standard user cannot
+  ; modify them. Registration is machine-wide (HKLM) only; no per-user keys are written.
+  ; Only paths are written here: no credentials, UUID, secret or bridge token.
+  DetailPrint "Installing native messaging host files..."
+  CreateDirectory "$INSTDIR\native-host"
+  FileOpen $2 "$INSTDIR\native-host\native-host.bat" w
+  FileWrite $2 '@echo off$\r$\n'
+  FileWrite $2 'set ELECTRON_RUN_AS_NODE=1$\r$\n'
+  FileWrite $2 '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" "$INSTDIR\resources\app.asar\src\monitoring\extension\nativeHost.js" %*$\r$\n'
+  FileClose $2
+
+  ; JSON is generated by PowerShell (ConvertTo-Json) so backslashes are escaped
+  ; correctly. Exactly one allowed origin: the fixed extension id.
+  nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[ordered]@{ name = 'co.humancareconnect.monitoring'; description = 'HumanCare Connect monitoring bridge'; path = '$INSTDIR\native-host\native-host.bat'; type = 'stdio'; allowed_origins = [string[]]@('chrome-extension://acfadakklgdcfmogimojahhgihenaiii/') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath '$INSTDIR\native-host\co.humancareconnect.monitoring.json' -Encoding ascii"`
+  Pop $3
+  ${If} $3 != 0
+    DetailPrint "Warning: native messaging manifest generation returned $3."
+  ${EndIf}
+
+  WriteRegStr HKLM "SOFTWARE\Google\Chrome\NativeMessagingHosts\co.humancareconnect.monitoring" "" "$INSTDIR\native-host\co.humancareconnect.monitoring.json"
+  WriteRegStr HKLM "SOFTWARE\Microsoft\Edge\NativeMessagingHosts\co.humancareconnect.monitoring" "" "$INSTDIR\native-host\co.humancareconnect.monitoring.json"
+
+  ; Block per-user native messaging hosts so they cannot shadow the
+  ; machine-wide host above. An existing value (e.g. set by the organisation)
+  ; is never overwritten; a marker file records only the values this installer
+  ; created so the uninstaller removes nothing else.
+  ClearErrors
+  ReadRegDWORD $4 HKLM "SOFTWARE\Policies\Google\Chrome" "NativeMessagingUserLevelHosts"
+  ${If} ${Errors}
+    WriteRegDWORD HKLM "SOFTWARE\Policies\Google\Chrome" "NativeMessagingUserLevelHosts" 0
+    FileOpen $5 "$INSTDIR\native-host\policy-chrome.owned" w
+    FileClose $5
+  ${Else}
+    DetailPrint "Chrome NativeMessagingUserLevelHosts already set; leaving it unchanged."
+  ${EndIf}
+
+  ClearErrors
+  ReadRegDWORD $4 HKLM "SOFTWARE\Policies\Microsoft\Edge" "NativeMessagingUserLevelHosts"
+  ${If} ${Errors}
+    WriteRegDWORD HKLM "SOFTWARE\Policies\Microsoft\Edge" "NativeMessagingUserLevelHosts" 0
+    FileOpen $5 "$INSTDIR\native-host\policy-edge.owned" w
+    FileClose $5
+  ${Else}
+    DetailPrint "Edge NativeMessagingUserLevelHosts already set; leaving it unchanged."
+  ${EndIf}
+!macroend
 
 !macro customUnInstall
   DetailPrint "Removing scheduled task: HumanCare Connect Monitoring Agent (if present)..."
   ExecWait 'schtasks.exe /Delete /TN "HumanCare Connect Monitoring Agent" /F' $0
+
+  ; Remove ONLY this host's two keys (never the parent NativeMessagingHosts
+  ; keys, which belong to other software), then the host files. User
+  ; credentials/userData and the per-user bridge files are not touched.
+  ; Remove the two policy values only if this installer created them (marker
+  ; file) and they still hold the value we wrote. Parent Policies keys and
+  ; every other policy value are left alone.
+  ${If} ${FileExists} "$INSTDIR\native-host\policy-chrome.owned"
+    ClearErrors
+    ReadRegDWORD $4 HKLM "SOFTWARE\Policies\Google\Chrome" "NativeMessagingUserLevelHosts"
+    ${IfNot} ${Errors}
+    ${AndIf} $4 == 0
+      DeleteRegValue HKLM "SOFTWARE\Policies\Google\Chrome" "NativeMessagingUserLevelHosts"
+    ${EndIf}
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR\native-host\policy-edge.owned"
+    ClearErrors
+    ReadRegDWORD $4 HKLM "SOFTWARE\Policies\Microsoft\Edge" "NativeMessagingUserLevelHosts"
+    ${IfNot} ${Errors}
+    ${AndIf} $4 == 0
+      DeleteRegValue HKLM "SOFTWARE\Policies\Microsoft\Edge" "NativeMessagingUserLevelHosts"
+    ${EndIf}
+  ${EndIf}
+
+  DetailPrint "Removing native messaging host registration and files..."
+  DeleteRegKey HKLM "SOFTWARE\Google\Chrome\NativeMessagingHosts\co.humancareconnect.monitoring"
+  DeleteRegKey HKLM "SOFTWARE\Microsoft\Edge\NativeMessagingHosts\co.humancareconnect.monitoring"
+  RMDir /r "$INSTDIR\native-host"
 !macroend
