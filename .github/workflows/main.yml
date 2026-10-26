@@ -1,0 +1,14 @@
+
+name: GitHub Actions Test
+
+on: [push]
+
+permissions:
+  contents: read
+
+jobs:
+  hello:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm workflow runs
+        run: echo "GitHub Actions is working!"
